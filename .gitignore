@@ -1,0 +1,9 @@
+build/
+node_modules/
+.lock-waf_*
+.wafpickle-*
+npm-debug.log*
+.DS_Store
+*.swp
+*.swo
+.env
