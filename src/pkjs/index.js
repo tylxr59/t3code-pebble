@@ -160,6 +160,15 @@ function truncate(text, max) {
   return text.length > max ? text.slice(0, Math.max(0, max - 3)) + "..." : text;
 }
 
+function basename(path) {
+  var text = String(path || "").replace(/\\/g, "/");
+  var parts = text.split("/");
+  for (var i = parts.length - 1; i >= 0; i--) {
+    if (parts[i]) return parts[i];
+  }
+  return "";
+}
+
 function requestJson(url, method, body, bearerToken, callback) {
   var req = new XMLHttpRequest();
   var finished = false;
@@ -389,7 +398,8 @@ function loadProjects(seq) {
         Index: i,
         Total: count,
         ProjectId: projects[i].id,
-        Title: truncate(projects[i].title || projects[i].workspaceRoot || "Project", 64)
+        Title: truncate(projects[i].title || basename(projects[i].workspaceRoot) || "Project", 64),
+        Status: truncate(basename(projects[i].workspaceRoot) || projects[i].workspaceRoot || "Project workspace", 28)
       });
     }
     send({ Command: CMD_DONE, Seq: seq, Total: count });
