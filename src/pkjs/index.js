@@ -464,19 +464,82 @@ function loadMessages(seq, threadId) {
   });
 }
 
-function guid(prefix) {
-  return prefix + ":" + Date.now() + ":" + Math.floor(Math.random() * 1000000);
+function uuid() {
+  var chars = "0123456789abcdef";
+  var out = "";
+  for (var i = 0; i < 36; i++) {
+    if (i === 8 || i === 13 || i === 18 || i === 23) {
+      out += "-";
+    } else if (i === 14) {
+      out += "4";
+    } else if (i === 19) {
+      out += chars.charAt((Math.floor(Math.random() * 16) & 3) | 8);
+    } else {
+      out += chars.charAt(Math.floor(Math.random() * 16));
+    }
+  }
+  return out;
 }
 
-function sendTurn(seq, threadId, text) {
+function isLocalThreadId(threadId) {
+  return String(threadId || "").indexOf("pebble-thread:") === 0;
+}
+
+function firstLine(text) {
+  var line = String(text || "").split(/\r?\n/)[0];
+  return truncate(line || "Pebble thread", 48);
+}
+
+function modelSelectionForProject(snapshot, projectId) {
+  var threads = snapshot && snapshot.threads ? snapshot.threads : [];
+  var best = null;
+  for (var i = 0; i < threads.length; i++) {
+    if (threads[i].projectId === projectId && threads[i].modelSelection) {
+      if (!best || String(threads[i].updatedAt || "").localeCompare(String(best.updatedAt || "")) > 0) {
+        best = threads[i];
+      }
+    }
+  }
+  return best && best.modelSelection ? best.modelSelection : { provider: "codex", model: "gpt-5" };
+}
+
+function createThread(seq, projectId, text, callback) {
+  if (!projectId) {
+    callback(new Error("Missing project"));
+    return;
+  }
+  var serverThreadId = uuid();
+  loadShellSnapshot(seq, function(snapshotErr, snapshot) {
+    if (snapshotErr) {
+      callback(snapshotErr);
+      return;
+    }
+    rpc("orchestration.dispatchCommand", {
+      type: "thread.create",
+      commandId: uuid(),
+      threadId: serverThreadId,
+      projectId: projectId,
+      title: firstLine(text),
+      modelSelection: modelSelectionForProject(snapshot, projectId),
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: new Date().toISOString()
+    }, function() {}, function(err) {
+      callback(err, serverThreadId);
+    });
+  });
+}
+
+function dispatchTurn(threadId, text, callback) {
   var now = new Date().toISOString();
-  sendStatus("Sending");
   rpc("orchestration.dispatchCommand", {
     type: "thread.turn.start",
-    commandId: guid("pebble-command"),
+    commandId: uuid(),
     threadId: threadId,
     message: {
-      messageId: guid("pebble-message"),
+      messageId: uuid(),
       role: "user",
       text: text || "",
       attachments: []
@@ -484,14 +547,34 @@ function sendTurn(seq, threadId, text) {
     runtimeMode: "full-access",
     interactionMode: "default",
     createdAt: now
-  }, function() {}, function(err) {
+  }, function() {}, callback);
+}
+
+function sendTurn(seq, threadId, projectId, text) {
+  sendStatus("Sending");
+  function finish(actualThreadId, err) {
     if (err) {
       sendError(seq, err.message);
       return;
     }
-    send({ Command: CMD_DONE, Seq: seq, Status: "Sent" });
-    loadMessages(seq + 1, threadId);
-  });
+    send({ Command: CMD_DONE, Seq: seq, ThreadId: actualThreadId, Status: "Sent" });
+    loadMessages(seq + 1, actualThreadId);
+  }
+  if (isLocalThreadId(threadId)) {
+    createThread(seq, projectId, text, function(err, serverThreadId) {
+      if (err) {
+        finish(threadId, err);
+        return;
+      }
+      dispatchTurn(serverThreadId, text, function(turnErr) {
+        finish(serverThreadId, turnErr);
+      });
+    });
+  } else {
+    dispatchTurn(threadId, text, function(err) {
+      finish(threadId, err);
+    });
+  }
 }
 
 Pebble.addEventListener("ready", function() {});
@@ -538,6 +621,6 @@ Pebble.addEventListener("appmessage", function(e) {
   } else if (command === CMD_MESSAGES) {
     loadMessages(seq, value(payload, "ThreadId", ""));
   } else if (command === CMD_SEND) {
-    sendTurn(seq, value(payload, "ThreadId", ""), value(payload, "Text", ""));
+    sendTurn(seq, value(payload, "ThreadId", ""), value(payload, "ProjectId", ""), value(payload, "Text", ""));
   }
 });

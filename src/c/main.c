@@ -53,6 +53,7 @@ static Layer *s_accent_layer;
 static Layer *s_loading_layer;
 static Layer *s_list_layer;
 static Layer *s_message_layer;
+static Layer *s_blank_layer;
 static Layer *s_footer_bg_layer;
 static TextLayer *s_header_layer;
 static TextLayer *s_body_layer;
@@ -116,6 +117,7 @@ static void prv_send_text(uint8_t command, const char *text) {
   dict_write_uint8(iter, MESSAGE_KEY_Command, command);
   dict_write_uint32(iter, MESSAGE_KEY_Seq, s_seq);
   dict_write_cstring(iter, MESSAGE_KEY_ThreadId, s_thread_id);
+  dict_write_cstring(iter, MESSAGE_KEY_ProjectId, s_project_id);
   dict_write_cstring(iter, MESSAGE_KEY_Text, text ? text : "");
   dict_write_end(iter);
   app_message_outbox_send();
@@ -158,6 +160,10 @@ static bool prv_is_nav_loading(void) {
 
 static bool prv_is_message_view(void) {
   return !s_loading && s_view == VIEW_MESSAGES && s_message_count > 0;
+}
+
+static bool prv_is_blank_thread_view(void) {
+  return !s_loading && s_view == VIEW_MESSAGES && s_message_count == 0;
 }
 
 static const char *prv_list_title(int index) {
@@ -237,7 +243,7 @@ static void prv_render(void) {
     snprintf(body, sizeof(body), "\n\n%s", s_status);
   } else if (count == 0) {
     if (s_view == VIEW_MESSAGES) {
-      snprintf(body, sizeof(body), "\n\nBlank thread");
+      body[0] = '\0';
     } else {
       snprintf(body, sizeof(body), "\n\nNo items");
     }
@@ -292,9 +298,11 @@ static void prv_render(void) {
   layer_set_hidden(s_loading_layer, !prv_is_nav_loading());
   layer_set_hidden(s_list_layer, !prv_is_list_view());
   layer_set_hidden(s_message_layer, !prv_is_message_view());
+  layer_set_hidden(s_blank_layer, !prv_is_blank_thread_view());
   if (s_loading_layer) layer_mark_dirty(s_loading_layer);
   if (s_list_layer) layer_mark_dirty(s_list_layer);
   if (s_message_layer) layer_mark_dirty(s_message_layer);
+  if (s_blank_layer) layer_mark_dirty(s_blank_layer);
   prv_sync_loading_timer();
 }
 
@@ -443,6 +451,21 @@ static void prv_message_update_proc(Layer *layer, GContext *ctx) {
                      text_rect, GTextOverflowModeTrailingEllipsis, align, NULL);
 }
 
+static void prv_blank_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  GRect title_rect = GRect(8, bounds.size.h / 2 - 36, bounds.size.w - 16, 30);
+  GRect hint_rect = GRect(14, bounds.size.h / 2 - 6, bounds.size.w - 28, 48);
+
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, "Blank thread", fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+                     title_rect, GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, "Hold SELECT to dictate a message",
+                     fonts_get_system_font(FONT_KEY_GOTHIC_18),
+                     hint_rect, GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+}
+
 static void prv_begin_load(const char *status) {
   s_seq++;
   s_loading = true;
@@ -484,7 +507,7 @@ static void prv_open_new_thread(void) {
   s_list_first = 0;
   snprintf(s_thread_id, sizeof(s_thread_id), "pebble-thread:%lu:%lu",
            (unsigned long)time(NULL), (unsigned long)s_seq);
-  prv_copy_cstr(s_status, sizeof(s_status), "Long SELECT to dictate");
+  prv_copy_cstr(s_status, sizeof(s_status), "");
   prv_render();
 }
 
@@ -648,6 +671,8 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
 
   if (command == CMD_DONE) {
     s_loading = false;
+    Tuple *thread_id_tuple = dict_find(iter, MESSAGE_KEY_ThreadId);
+    if (thread_id_tuple) prv_copy_cstr(s_thread_id, sizeof(s_thread_id), thread_id_tuple->value->cstring);
     Tuple *status_tuple = dict_find(iter, MESSAGE_KEY_Status);
     if (status_tuple) prv_copy_cstr(s_status, sizeof(s_status), status_tuple->value->cstring);
     if (s_view == VIEW_MESSAGES) {
@@ -735,6 +760,11 @@ static void prv_window_load(Window *window) {
   layer_set_hidden(s_message_layer, true);
   layer_add_child(root, s_message_layer);
 
+  s_blank_layer = layer_create(GRect(0, 31, bounds.size.w, 168));
+  layer_set_update_proc(s_blank_layer, prv_blank_update_proc);
+  layer_set_hidden(s_blank_layer, true);
+  layer_add_child(root, s_blank_layer);
+
   s_footer_bg_layer = layer_create(GRect(0, 200, bounds.size.w, 28));
   layer_set_update_proc(s_footer_bg_layer, prv_footer_bg_update_proc);
   layer_add_child(root, s_footer_bg_layer);
@@ -759,6 +789,7 @@ static void prv_window_unload(Window *window) {
   layer_destroy(s_loading_layer);
   layer_destroy(s_list_layer);
   layer_destroy(s_message_layer);
+  layer_destroy(s_blank_layer);
   layer_destroy(s_footer_bg_layer);
   text_layer_destroy(s_header_layer);
   text_layer_destroy(s_body_layer);
