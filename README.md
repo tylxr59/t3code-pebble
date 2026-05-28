@@ -78,7 +78,7 @@ npm run build
 
 `npm run lint` validates PebbleKitJS syntax, runs ESLint, and checks C formatting with
 `clang-format`. Every successful workflow uploads the `.pbw` as a build artifact. Pushing a
-version tag such as `v0.1.0` also creates or updates a GitHub Release and attaches the `.pbw`.
+version tag such as `v0.1.1` also creates or updates a GitHub Release and attaches the `.pbw`.
 
 ## Protocol Notes
 
