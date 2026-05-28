@@ -60,11 +60,25 @@ The pairing code is exchanged for a bearer session token and is not needed again
 ## Build
 
 ```bash
-npm install
-pebble build
+npm ci
+npm run build
 ```
 
 The built app is written to `build/t3code-pebble.pbw`.
+
+## CI
+
+GitHub Actions runs on pull requests and pushes to `main`:
+
+```bash
+npm ci
+npm run lint
+npm run build
+```
+
+`npm run lint` validates PebbleKitJS syntax, runs ESLint, and checks C formatting with
+`clang-format`. Every successful workflow uploads the `.pbw` as a build artifact. Pushing a
+version tag such as `v0.1.0` also creates or updates a GitHub Release and attaches the `.pbw`.
 
 ## Protocol Notes
 

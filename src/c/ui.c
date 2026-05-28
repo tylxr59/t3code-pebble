@@ -382,7 +382,8 @@ static void prv_list_update_proc(Layer *layer, GContext *ctx) {
     bool has_thread_icon = thread && (thread->working || thread->unseen_done);
     int text_x = LIST_SIDE_PADDING + (has_marker ? LIST_MARKER_WIDTH + 4 : 0);
     if (has_thread_icon) {
-      GColor icon_color = highlighted ? GColorWhite : (thread->working ? GColorCobaltBlue : GColorDarkGray);
+      GColor icon_color =
+          highlighted ? GColorWhite : (thread->working ? GColorCobaltBlue : GColorDarkGray);
       GRect icon_rect = GRect(text_x, y + 5, 14, 16);
       if (thread->working) {
         prv_draw_working_icon(ctx, icon_rect, icon_color);

@@ -3,6 +3,13 @@
   "version": "0.1.0",
   "author": "T3 Code Pebble Contributors",
   "private": true,
+  "scripts": {
+    "check:js": "node --check src/pkjs/index.js",
+    "lint:js": "eslint src/pkjs/**/*.js",
+    "format:c:check": "clang-format --dry-run --Werror src/c/*.c src/c/*.h",
+    "lint": "npm run check:js && npm run lint:js && npm run format:c:check",
+    "build": "pebble build"
+  },
   "pebble": {
     "displayName": "T3 Code",
     "uuid": "ebdc99fc-290b-4b29-bcf5-cd50d00bd587",
@@ -36,5 +43,8 @@
     "resources": {
       "media": []
     }
+  },
+  "devDependencies": {
+    "eslint": "^9.39.4"
   }
 }
