@@ -492,7 +492,7 @@ void ui_create(Window *window, UiState *state) {
   layer_set_hidden(s_blank_layer, true);
   layer_add_child(root, s_blank_layer);
 
-  s_footer_bg_layer = layer_create(GRect(0, 200, bounds.size.w, 28));
+  s_footer_bg_layer = layer_create(GRect(0, 199, bounds.size.w, 29));
   layer_set_update_proc(s_footer_bg_layer, prv_footer_bg_update_proc);
   layer_add_child(root, s_footer_bg_layer);
 
