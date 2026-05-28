@@ -60,10 +60,12 @@ static TextLayer *s_body_layer;
 static TextLayer *s_footer_layer;
 static DictationSession *s_dictation;
 static AppTimer *s_loading_timer;
+static AppTimer *s_request_timer;
 
 static View s_view = VIEW_PROJECTS;
 static uint32_t s_seq = 1;
 static bool s_loading = false;
+static bool s_refresh_after_send = false;
 static int s_selected = 0;
 static int s_scroll = 0;
 static int s_list_first = 0;
@@ -82,7 +84,10 @@ static char s_status[96] = "Loading";
 static void prv_request_projects(void);
 static void prv_request_threads(void);
 static void prv_request_messages(void);
+static void prv_render(void);
+static void prv_end_load(void);
 static void prv_sync_loading_timer(void);
+static void prv_request_timeout(void *context);
 
 static const GColor s_accent_colors[] = {
   { .argb = GColorPictonBlueARGB8 },
@@ -99,7 +104,13 @@ static void prv_copy_cstr(char *dest, size_t len, const char *src) {
 
 static void prv_send_request(uint8_t command) {
   DictionaryIterator *iter;
-  if (app_message_outbox_begin(&iter) != APP_MSG_OK) return;
+  AppMessageResult result = app_message_outbox_begin(&iter);
+  if (result != APP_MSG_OK) {
+    prv_copy_cstr(s_status, sizeof(s_status), "Phone message busy");
+    prv_end_load();
+    prv_render();
+    return;
+  }
   dict_write_uint8(iter, MESSAGE_KEY_Command, command);
   dict_write_uint32(iter, MESSAGE_KEY_Seq, s_seq);
   if (command == CMD_THREADS) {
@@ -108,19 +119,35 @@ static void prv_send_request(uint8_t command) {
     dict_write_cstring(iter, MESSAGE_KEY_ThreadId, s_thread_id);
   }
   dict_write_end(iter);
-  app_message_outbox_send();
+  result = app_message_outbox_send();
+  if (result != APP_MSG_OK) {
+    prv_copy_cstr(s_status, sizeof(s_status), "Phone send failed");
+    prv_end_load();
+    prv_render();
+  }
 }
 
 static void prv_send_text(uint8_t command, const char *text) {
   DictionaryIterator *iter;
-  if (app_message_outbox_begin(&iter) != APP_MSG_OK) return;
+  AppMessageResult result = app_message_outbox_begin(&iter);
+  if (result != APP_MSG_OK) {
+    prv_copy_cstr(s_status, sizeof(s_status), "Phone message busy");
+    prv_end_load();
+    prv_render();
+    return;
+  }
   dict_write_uint8(iter, MESSAGE_KEY_Command, command);
   dict_write_uint32(iter, MESSAGE_KEY_Seq, s_seq);
   dict_write_cstring(iter, MESSAGE_KEY_ThreadId, s_thread_id);
   dict_write_cstring(iter, MESSAGE_KEY_ProjectId, s_project_id);
   dict_write_cstring(iter, MESSAGE_KEY_Text, text ? text : "");
   dict_write_end(iter);
-  app_message_outbox_send();
+  result = app_message_outbox_send();
+  if (result != APP_MSG_OK) {
+    prv_copy_cstr(s_status, sizeof(s_status), "Phone send failed");
+    prv_end_load();
+    prv_render();
+  }
 }
 
 static int prv_current_count(void) {
@@ -469,11 +496,31 @@ static void prv_blank_update_proc(Layer *layer, GContext *ctx) {
 static void prv_begin_load(const char *status) {
   s_seq++;
   s_loading = true;
+  s_refresh_after_send = false;
   s_selected = 0;
   s_scroll = 0;
   s_list_first = 0;
   s_loading_frame = 0;
   prv_copy_cstr(s_status, sizeof(s_status), status);
+  if (s_request_timer) app_timer_cancel(s_request_timer);
+  s_request_timer = app_timer_register(45000, prv_request_timeout, NULL);
+  prv_render();
+}
+
+static void prv_end_load(void) {
+  s_loading = false;
+  if (s_request_timer) {
+    app_timer_cancel(s_request_timer);
+    s_request_timer = NULL;
+  }
+}
+
+static void prv_request_timeout(void *context) {
+  s_request_timer = NULL;
+  if (!s_loading) return;
+  prv_copy_cstr(s_status, sizeof(s_status), "Phone timeout");
+  s_loading = false;
+  s_refresh_after_send = false;
   prv_render();
 }
 
@@ -602,6 +649,7 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
                                    char *transcription, void *context) {
   if (status == DictationSessionStatusSuccess && transcription && strlen(transcription) > 0) {
     prv_begin_load("Sending");
+    s_refresh_after_send = true;
     prv_send_text(CMD_SEND, transcription);
   } else {
     prv_copy_cstr(s_status, sizeof(s_status), "Dictation cancelled");
@@ -664,17 +712,24 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   if (command == CMD_ERROR) {
     Tuple *error_tuple = dict_find(iter, MESSAGE_KEY_Error);
     prv_copy_cstr(s_status, sizeof(s_status), error_tuple ? error_tuple->value->cstring : "Error");
-    s_loading = false;
+    prv_end_load();
+    s_refresh_after_send = false;
     prv_render();
     return;
   }
 
   if (command == CMD_DONE) {
-    s_loading = false;
+    bool refresh_after_send = s_refresh_after_send;
+    prv_end_load();
+    s_refresh_after_send = false;
     Tuple *thread_id_tuple = dict_find(iter, MESSAGE_KEY_ThreadId);
     if (thread_id_tuple) prv_copy_cstr(s_thread_id, sizeof(s_thread_id), thread_id_tuple->value->cstring);
     Tuple *status_tuple = dict_find(iter, MESSAGE_KEY_Status);
     if (status_tuple) prv_copy_cstr(s_status, sizeof(s_status), status_tuple->value->cstring);
+    if (refresh_after_send && s_view == VIEW_MESSAGES) {
+      prv_request_messages();
+      return;
+    }
     if (s_view == VIEW_MESSAGES) {
       s_selected = s_message_count > 0 ? s_message_count - 1 : 0;
     }
@@ -721,6 +776,14 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
                   status ? status->value->cstring : "");
     if (index >= s_message_count) s_message_count = index + 1;
   }
+}
+
+static void prv_outbox_failed(DictionaryIterator *iter, AppMessageResult reason, void *context) {
+  if (!s_loading) return;
+  prv_copy_cstr(s_status, sizeof(s_status), "Phone send failed");
+  prv_end_load();
+  s_refresh_after_send = false;
+  prv_render();
 }
 
 static void prv_window_load(Window *window) {
@@ -785,6 +848,10 @@ static void prv_window_unload(Window *window) {
     app_timer_cancel(s_loading_timer);
     s_loading_timer = NULL;
   }
+  if (s_request_timer) {
+    app_timer_cancel(s_request_timer);
+    s_request_timer = NULL;
+  }
   layer_destroy(s_accent_layer);
   layer_destroy(s_loading_layer);
   layer_destroy(s_list_layer);
@@ -798,6 +865,7 @@ static void prv_window_unload(Window *window) {
 
 static void prv_init(void) {
   app_message_register_inbox_received(prv_inbox_received);
+  app_message_register_outbox_failed(prv_outbox_failed);
   app_message_open(2048, 2048);
 
   s_window = window_create();

@@ -558,7 +558,6 @@ function sendTurn(seq, threadId, projectId, text) {
       return;
     }
     send({ Command: CMD_DONE, Seq: seq, ThreadId: actualThreadId, Status: "Sent" });
-    loadMessages(seq + 1, actualThreadId);
   }
   if (isLocalThreadId(threadId)) {
     createThread(seq, projectId, text, function(err, serverThreadId) {

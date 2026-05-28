@@ -55,7 +55,7 @@ The app uses PebbleKitJS for all network access:
 
 Only the required RPC subset is implemented:
 
-- `orchestration.subscribeShell` for projects and threads.
+- `orchestration.subscribeShell` for projects and threads, with `orchestration.getArchivedShellSnapshot` as a fallback.
 - `orchestration.subscribeThread` for thread messages.
 - `orchestration.dispatchCommand` for dictated `thread.turn.start` messages.
 

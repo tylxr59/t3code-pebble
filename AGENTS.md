@@ -28,4 +28,4 @@ Responses are `_tag: "Exit"` for unary calls and `_tag: "Chunk"` plus `_tag: "Ex
 {"_tag":"Ack","requestId":"1"}
 ```
 
-For project and thread lists, prefer unary `orchestration.getArchivedShellSnapshot`. For thread messages, use `orchestration.subscribeThread` and close after the first snapshot.
+For project and thread lists, prefer live `orchestration.subscribeShell` and close after the first snapshot. Do not switch this to unary-first `orchestration.getArchivedShellSnapshot`: in this app it has twice regressed the watch to showing only archived/limited projects such as `PebbleGetMe` and `Pinhole`, with no useful thread list. Keep `getArchivedShellSnapshot` only as a fallback if `subscribeShell` errors. For thread messages, use `orchestration.subscribeThread` and close after the first snapshot.

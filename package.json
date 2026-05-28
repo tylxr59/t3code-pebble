@@ -3,9 +3,6 @@
   "version": "0.1.0",
   "author": "T3 Code Pebble Contributors",
   "private": true,
-  "dependencies": {
-    "@rebble/clay": "^1.0.8"
-  },
   "pebble": {
     "displayName": "T3 Code",
     "uuid": "ebdc99fc-290b-4b29-bcf5-cd50d00bd587",
