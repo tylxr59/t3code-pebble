@@ -393,7 +393,9 @@ static void prv_list_update_proc(Layer *layer, GContext *ctx) {
       text_x += 17;
     }
     int text_w = bounds.size.w - text_x - LIST_SIDE_PADDING;
-    GRect title_rect = GRect(text_x, y + 1, text_w, 22);
+    bool project_row = s_state->view == VIEW_PROJECTS;
+    GRect title_rect =
+        project_row ? GRect(text_x, y + 9, text_w, 24) : GRect(text_x, y + 1, text_w, 22);
     GRect sub_rect = GRect(text_x, y + 21, text_w, 18);
 
     graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorBlack);
@@ -404,6 +406,8 @@ static void prv_list_update_proc(Layer *layer, GContext *ctx) {
                        GTextOverflowModeTrailingEllipsis,
                        GTextAlignmentLeft,
                        NULL);
+    if (project_row) continue;
+
     graphics_context_set_text_color(ctx, highlighted ? GColorCeleste : GColorDarkGray);
     graphics_draw_text(ctx,
                        prv_list_subtitle(index),
