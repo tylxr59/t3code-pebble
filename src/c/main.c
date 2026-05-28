@@ -50,12 +50,15 @@ typedef struct {
 
 static Window *s_window;
 static Layer *s_accent_layer;
+static Layer *s_loading_layer;
 static Layer *s_list_layer;
 static Layer *s_message_layer;
+static Layer *s_footer_bg_layer;
 static TextLayer *s_header_layer;
 static TextLayer *s_body_layer;
 static TextLayer *s_footer_layer;
 static DictationSession *s_dictation;
+static AppTimer *s_loading_timer;
 
 static View s_view = VIEW_PROJECTS;
 static uint32_t s_seq = 1;
@@ -63,6 +66,7 @@ static bool s_loading = false;
 static int s_selected = 0;
 static int s_scroll = 0;
 static int s_list_first = 0;
+static int s_loading_frame = 0;
 
 static ProjectItem s_projects[MAX_PROJECTS];
 static ThreadItem s_threads[MAX_THREADS];
@@ -77,6 +81,7 @@ static char s_status[96] = "Loading";
 static void prv_request_projects(void);
 static void prv_request_threads(void);
 static void prv_request_messages(void);
+static void prv_sync_loading_timer(void);
 
 static const GColor s_accent_colors[] = {
   { .argb = GColorPictonBlueARGB8 },
@@ -142,6 +147,10 @@ static const char *prv_title_for_selection(void) {
 
 static bool prv_is_list_view(void) {
   return !s_loading && (s_view == VIEW_PROJECTS || s_view == VIEW_THREADS);
+}
+
+static bool prv_is_nav_loading(void) {
+  return s_loading && (s_view == VIEW_PROJECTS || s_view == VIEW_THREADS);
 }
 
 static bool prv_is_message_view(void) {
@@ -211,7 +220,9 @@ static void prv_render(void) {
     prv_set_header(prv_title_for_selection());
   }
 
-  if (s_loading) {
+  if (prv_is_nav_loading()) {
+    body[0] = '\0';
+  } else if (s_loading) {
     snprintf(body, sizeof(body), "\n\n%s", s_status);
   } else if (count == 0) {
     snprintf(body, sizeof(body), "\n\nNo items");
@@ -237,7 +248,9 @@ static void prv_render(void) {
     snprintf(body, sizeof(body), "%s", project->title);
   }
 
-  if (s_view == VIEW_EXPANDED) {
+  if (prv_is_nav_loading()) {
+    footer[0] = '\0';
+  } else if (s_view == VIEW_EXPANDED) {
     snprintf(footer, sizeof(footer), "UP/DN scroll  SEL back");
   } else if (count > 0) {
     if (s_view == VIEW_PROJECTS) {
@@ -255,11 +268,15 @@ static void prv_render(void) {
 
   text_layer_set_text(s_body_layer, body);
   text_layer_set_text(s_footer_layer, footer);
-  layer_set_hidden(text_layer_get_layer(s_body_layer), prv_is_list_view() || prv_is_message_view());
+  layer_set_hidden(text_layer_get_layer(s_body_layer),
+                   prv_is_nav_loading() || prv_is_list_view() || prv_is_message_view());
+  layer_set_hidden(s_loading_layer, !prv_is_nav_loading());
   layer_set_hidden(s_list_layer, !prv_is_list_view());
   layer_set_hidden(s_message_layer, !prv_is_message_view());
+  if (s_loading_layer) layer_mark_dirty(s_loading_layer);
   if (s_list_layer) layer_mark_dirty(s_list_layer);
   if (s_message_layer) layer_mark_dirty(s_message_layer);
+  prv_sync_loading_timer();
 }
 
 static void prv_accent_update_proc(Layer *layer, GContext *ctx) {
@@ -270,6 +287,49 @@ static void prv_accent_update_proc(Layer *layer, GContext *ctx) {
     graphics_context_set_fill_color(ctx, s_accent_colors[i]);
     graphics_fill_rect(ctx, GRect(i * segment_w, 0, segment_w + 1, bounds.size.h), 0, GCornerNone);
   }
+}
+
+static void prv_loading_tick(void *context) {
+  s_loading_timer = NULL;
+  if (!prv_is_nav_loading()) return;
+  s_loading_frame++;
+  if (s_loading_layer) layer_mark_dirty(s_loading_layer);
+  prv_sync_loading_timer();
+}
+
+static void prv_sync_loading_timer(void) {
+  if (prv_is_nav_loading()) {
+    if (!s_loading_timer) {
+      s_loading_timer = app_timer_register(180, prv_loading_tick, NULL);
+    }
+  } else if (s_loading_timer) {
+    app_timer_cancel(s_loading_timer);
+    s_loading_timer = NULL;
+  }
+}
+
+static void prv_loading_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+  GPoint center = GPoint(bounds.size.w / 2, bounds.size.h / 2);
+  static const GPoint offsets[] = {
+    { 0, -14 }, { 10, -10 }, { 14, 0 }, { 10, 10 },
+    { 0, 14 }, { -10, 10 }, { -14, 0 }, { -10, -10 },
+  };
+  int active = s_loading_frame % 8;
+
+  for (int i = 0; i < 8; i++) {
+    int distance = (i - active + 8) % 8;
+    GColor color = distance == 0 ? GColorCobaltBlue :
+                   distance <= 2 ? GColorCeleste : GColorLightGray;
+    int radius = distance == 0 ? 4 : 3;
+    graphics_context_set_fill_color(ctx, color);
+    graphics_fill_circle(ctx, GPoint(center.x + offsets[i].x, center.y + offsets[i].y), radius);
+  }
+}
+
+static void prv_footer_bg_update_proc(Layer *layer, GContext *ctx) {
+  graphics_context_set_fill_color(ctx, GColorCobaltBlue);
+  graphics_fill_rect(ctx, layer_get_bounds(layer), 0, GCornerNone);
 }
 
 static void prv_list_update_proc(Layer *layer, GContext *ctx) {
@@ -363,6 +423,7 @@ static void prv_begin_load(const char *status) {
   s_selected = 0;
   s_scroll = 0;
   s_list_first = 0;
+  s_loading_frame = 0;
   prv_copy_cstr(s_status, sizeof(s_status), status);
   prv_render();
 }
@@ -602,7 +663,7 @@ static void prv_window_load(Window *window) {
   layer_set_update_proc(s_accent_layer, prv_accent_update_proc);
   layer_add_child(root, s_accent_layer);
 
-  s_header_layer = text_layer_create(GRect(0, COLOR_BAR_HEIGHT, bounds.size.w, 28));
+  s_header_layer = text_layer_create(GRect(0, COLOR_BAR_HEIGHT + 2, bounds.size.w, 26));
   text_layer_set_font(s_header_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
   text_layer_set_text_alignment(s_header_layer, GTextAlignmentCenter);
   text_layer_set_background_color(s_header_layer, GColorWhite);
@@ -614,6 +675,11 @@ static void prv_window_load(Window *window) {
   text_layer_set_overflow_mode(s_body_layer, GTextOverflowModeTrailingEllipsis);
   layer_add_child(root, text_layer_get_layer(s_body_layer));
 
+  s_loading_layer = layer_create(GRect(0, 31, bounds.size.w, 168));
+  layer_set_update_proc(s_loading_layer, prv_loading_update_proc);
+  layer_set_hidden(s_loading_layer, true);
+  layer_add_child(root, s_loading_layer);
+
   s_list_layer = layer_create(GRect(0, 31, bounds.size.w, 168));
   layer_set_update_proc(s_list_layer, prv_list_update_proc);
   layer_set_hidden(s_list_layer, true);
@@ -624,10 +690,14 @@ static void prv_window_load(Window *window) {
   layer_set_hidden(s_message_layer, true);
   layer_add_child(root, s_message_layer);
 
-  s_footer_layer = text_layer_create(GRect(0, 200, bounds.size.w, 28));
+  s_footer_bg_layer = layer_create(GRect(0, 200, bounds.size.w, 28));
+  layer_set_update_proc(s_footer_bg_layer, prv_footer_bg_update_proc);
+  layer_add_child(root, s_footer_bg_layer);
+
+  s_footer_layer = text_layer_create(GRect(0, 205, bounds.size.w, 23));
   text_layer_set_font(s_footer_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
   text_layer_set_text_alignment(s_footer_layer, GTextAlignmentCenter);
-  text_layer_set_background_color(s_footer_layer, GColorCobaltBlue);
+  text_layer_set_background_color(s_footer_layer, GColorClear);
   text_layer_set_text_color(s_footer_layer, GColorWhite);
   layer_add_child(root, text_layer_get_layer(s_footer_layer));
 
@@ -636,9 +706,15 @@ static void prv_window_load(Window *window) {
 }
 
 static void prv_window_unload(Window *window) {
+  if (s_loading_timer) {
+    app_timer_cancel(s_loading_timer);
+    s_loading_timer = NULL;
+  }
   layer_destroy(s_accent_layer);
+  layer_destroy(s_loading_layer);
   layer_destroy(s_list_layer);
   layer_destroy(s_message_layer);
+  layer_destroy(s_footer_bg_layer);
   text_layer_destroy(s_header_layer);
   text_layer_destroy(s_body_layer);
   text_layer_destroy(s_footer_layer);
