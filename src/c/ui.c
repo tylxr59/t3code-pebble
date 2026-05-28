@@ -348,13 +348,6 @@ static void prv_list_update_proc(Layer *layer, GContext *ctx) {
       graphics_fill_rect(ctx, row_rect, 0, GCornerNone);
     }
 
-    if (!highlighted) {
-      graphics_context_set_stroke_color(ctx, GColorLightGray);
-      graphics_draw_line(ctx,
-                         GPoint(LIST_SIDE_PADDING, y + LIST_ROW_HEIGHT - 1),
-                         GPoint(bounds.size.w - LIST_SIDE_PADDING, y + LIST_ROW_HEIGHT - 1));
-    }
-
     if (s_state->view == VIEW_THREADS && index == 0) {
       graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorCobaltBlue);
       graphics_draw_text(ctx,
