@@ -5,6 +5,7 @@ var CMD_PROJECTS = 2;
 var CMD_THREADS = 3;
 var CMD_MESSAGES = 4;
 var CMD_SEND = 5;
+var CMD_CANCEL = 6;
 var CMD_ITEM = 20;
 var CMD_DONE = 21;
 var CMD_STATUS = 22;
@@ -12,6 +13,7 @@ var CMD_ERROR = 23;
 
 var REQUEST_TIMEOUT_MS = 20000;
 var SOCKET_TIMEOUT_MS = 30000;
+var POLL_INTERVAL_MS = 10000;
 var MAX_PROJECTS = 30;
 var MAX_THREADS = 40;
 var MAX_MESSAGES = 40;
@@ -21,6 +23,8 @@ var cachedSocketToken = null;
 var nextRequestId = 1;
 var appMessageQueue = [];
 var appMessageBusy = false;
+var messageViewToken = 0;
+var activeMessagePoll = null;
 
 function value(payload, name, fallback) {
   if (payload[name] !== undefined) return payload[name];
@@ -379,7 +383,55 @@ function loadShellSnapshot(seq, callback) {
   });
 }
 
+function cancelMessagePoll() {
+  messageViewToken++;
+  if (activeMessagePoll && activeMessagePoll.timer) {
+    clearTimeout(activeMessagePoll.timer);
+  }
+  activeMessagePoll = null;
+}
+
+function clearMessagePollTimer() {
+  if (activeMessagePoll && activeMessagePoll.timer) {
+    clearTimeout(activeMessagePoll.timer);
+    activeMessagePoll.timer = null;
+  }
+}
+
+function isTerminalSessionStatus(status) {
+  var text = String(status || "").toLowerCase();
+  return !text || text === "idle" || text === "ready" || text === "done" || text === "completed" ||
+         text === "failed" || text === "error" || text === "cancelled" || text === "canceled";
+}
+
+function isThreadWorking(thread) {
+  if (!thread) return false;
+  var messages = thread.messages || [];
+  for (var i = 0; i < messages.length; i++) {
+    if (messages[i] && messages[i].streaming) return true;
+  }
+  return !!(thread.session && !isTerminalSessionStatus(thread.session.status));
+}
+
+function scheduleMessagePoll(seq, threadId, token) {
+  clearMessagePollTimer();
+  if (token !== messageViewToken) return;
+  activeMessagePoll = {
+    threadId: threadId,
+    token: token,
+    timer: setTimeout(function() {
+      if (!activeMessagePoll || activeMessagePoll.token !== token || activeMessagePoll.threadId !== threadId) return;
+      loadMessages(seq, threadId, {
+        status: "Working...",
+        trackWorking: true,
+        viewToken: token
+      });
+    }, POLL_INTERVAL_MS)
+  };
+}
+
 function loadProjects(seq) {
+  cancelMessagePoll();
   sendStatus("Loading projects");
   loadShellSnapshot(seq, function(err, snapshot) {
     if (err) {
@@ -407,6 +459,7 @@ function loadProjects(seq) {
 }
 
 function loadThreads(seq, projectId) {
+  cancelMessagePoll();
   sendStatus("Loading threads");
   loadShellSnapshot(seq, function(err, snapshot) {
     if (err) {
@@ -437,11 +490,16 @@ function loadThreads(seq, projectId) {
   });
 }
 
-function loadMessages(seq, threadId) {
-  sendStatus("Loading messages");
+function loadMessages(seq, threadId, options) {
+  options = options || {};
+  var viewToken = options.viewToken;
+  if (viewToken !== undefined && viewToken !== messageViewToken) return;
+  sendStatus(options.status || "Loading messages");
   rpc("orchestration.subscribeThread", { threadId: threadId }, function(item) {
+    if (viewToken !== undefined && viewToken !== messageViewToken) return true;
     if (!item || item.kind !== "snapshot" || !item.snapshot.thread) return;
-    var messages = item.snapshot.thread.messages || [];
+    var thread = item.snapshot.thread;
+    var messages = thread.messages || [];
     var count = Math.min(messages.length, MAX_MESSAGES);
     var start = Math.max(0, messages.length - count);
     for (var i = 0; i < count; i++) {
@@ -457,9 +515,19 @@ function loadMessages(seq, threadId) {
         Status: msg.streaming ? "streaming" : ""
       });
     }
-    send({ Command: CMD_DONE, Seq: seq, Total: count });
+    var working = isThreadWorking(thread);
+    send({ Command: CMD_DONE, Seq: seq, Total: count, Status: working ? "Working..." : "" });
+    if (options.trackWorking) {
+      if (working) {
+        scheduleMessagePoll(seq, threadId, viewToken);
+      } else if (activeMessagePoll && activeMessagePoll.threadId === threadId) {
+        clearMessagePollTimer();
+        activeMessagePoll = null;
+      }
+    }
     return true;
   }, function(err) {
+    if (viewToken !== undefined && viewToken !== messageViewToken) return;
     if (err) sendError(seq, err.message);
   });
 }
@@ -618,8 +686,17 @@ Pebble.addEventListener("appmessage", function(e) {
   } else if (command === CMD_THREADS) {
     loadThreads(seq, value(payload, "ProjectId", ""));
   } else if (command === CMD_MESSAGES) {
-    loadMessages(seq, value(payload, "ThreadId", ""));
+    cancelMessagePoll();
+    var token = messageViewToken;
+    loadMessages(seq, value(payload, "ThreadId", ""), {
+      status: "Loading messages",
+      trackWorking: true,
+      viewToken: token
+    });
   } else if (command === CMD_SEND) {
+    cancelMessagePoll();
     sendTurn(seq, value(payload, "ThreadId", ""), value(payload, "ProjectId", ""), value(payload, "Text", ""));
+  } else if (command === CMD_CANCEL) {
+    cancelMessagePoll();
   }
 });

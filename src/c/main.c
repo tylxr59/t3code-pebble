@@ -17,6 +17,7 @@
 #define CMD_THREADS 3
 #define CMD_MESSAGES 4
 #define CMD_SEND 5
+#define CMD_CANCEL 6
 #define CMD_ITEM 20
 #define CMD_DONE 21
 #define CMD_STATUS 22
@@ -86,6 +87,7 @@ static void prv_request_threads(void);
 static void prv_request_messages(void);
 static void prv_render(void);
 static void prv_end_load(void);
+static void prv_send_cancel_poll(void);
 static void prv_sync_loading_timer(void);
 static void prv_request_timeout(void *context);
 
@@ -115,7 +117,7 @@ static void prv_send_request(uint8_t command) {
   dict_write_uint32(iter, MESSAGE_KEY_Seq, s_seq);
   if (command == CMD_THREADS) {
     dict_write_cstring(iter, MESSAGE_KEY_ProjectId, s_project_id);
-  } else if (command == CMD_MESSAGES || command == CMD_SEND) {
+  } else if (command == CMD_MESSAGES || command == CMD_SEND || command == CMD_CANCEL) {
     dict_write_cstring(iter, MESSAGE_KEY_ThreadId, s_thread_id);
   }
   dict_write_end(iter);
@@ -148,6 +150,16 @@ static void prv_send_text(uint8_t command, const char *text) {
     prv_end_load();
     prv_render();
   }
+}
+
+static void prv_send_cancel_poll(void) {
+  DictionaryIterator *iter;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK) return;
+  dict_write_uint8(iter, MESSAGE_KEY_Command, CMD_CANCEL);
+  dict_write_uint32(iter, MESSAGE_KEY_Seq, s_seq);
+  dict_write_cstring(iter, MESSAGE_KEY_ThreadId, s_thread_id);
+  dict_write_end(iter);
+  app_message_outbox_send();
 }
 
 static int prv_current_count(void) {
@@ -310,7 +322,11 @@ static void prv_render(void) {
         snprintf(footer, sizeof(footer), "%d/%d  SELECT opens messages", s_selected, s_thread_count);
       }
     } else if (s_view == VIEW_MESSAGES) {
-      snprintf(footer, sizeof(footer), "%d/%d  UP older  DOWN newer", s_selected + 1, count);
+      if (strlen(s_status) > 0) {
+        snprintf(footer, sizeof(footer), "%s", s_status);
+      } else {
+        snprintf(footer, sizeof(footer), "%d/%d  UP older  DOWN newer", s_selected + 1, count);
+      }
     } else {
       snprintf(footer, sizeof(footer), "Msg %d/%d  SEL view", s_selected + 1, count);
     }
@@ -671,6 +687,8 @@ static void prv_back_click(ClickRecognizerRef recognizer, void *context) {
     s_view = VIEW_MESSAGES;
     prv_render();
   } else if (s_view == VIEW_MESSAGES) {
+    s_seq++;
+    prv_send_cancel_poll();
     s_view = VIEW_THREADS;
     s_selected = 0;
     s_list_first = 0;
@@ -725,7 +743,13 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
     Tuple *thread_id_tuple = dict_find(iter, MESSAGE_KEY_ThreadId);
     if (thread_id_tuple) prv_copy_cstr(s_thread_id, sizeof(s_thread_id), thread_id_tuple->value->cstring);
     Tuple *status_tuple = dict_find(iter, MESSAGE_KEY_Status);
-    if (status_tuple) prv_copy_cstr(s_status, sizeof(s_status), status_tuple->value->cstring);
+    Tuple *total_tuple = dict_find(iter, MESSAGE_KEY_Total);
+    if (s_view == VIEW_MESSAGES && total_tuple) {
+      s_message_count = (int)total_tuple->value->int32;
+      prv_copy_cstr(s_status, sizeof(s_status), status_tuple ? status_tuple->value->cstring : "");
+    } else if (status_tuple) {
+      prv_copy_cstr(s_status, sizeof(s_status), status_tuple->value->cstring);
+    }
     if (refresh_after_send && s_view == VIEW_MESSAGES) {
       prv_request_messages();
       return;
