@@ -123,7 +123,7 @@ static void prv_send_text(uint8_t command, const char *text) {
 
 static int prv_current_count(void) {
   if (s_view == VIEW_PROJECTS) return s_project_count;
-  if (s_view == VIEW_THREADS) return s_thread_count;
+  if (s_view == VIEW_THREADS) return s_thread_count + 1;
   if (s_view == VIEW_MESSAGES || s_view == VIEW_EXPANDED) return s_message_count;
   return 0;
 }
@@ -138,7 +138,9 @@ static const char *prv_message_label(const MessageItem *msg) {
 
 static const char *prv_title_for_selection(void) {
   if (s_view == VIEW_PROJECTS && s_project_count > 0) return s_projects[s_selected].title;
-  if (s_view == VIEW_THREADS && s_thread_count > 0) return s_threads[s_selected].title;
+  if (s_view == VIEW_THREADS && s_selected > 0 && s_selected <= s_thread_count) {
+    return s_threads[s_selected - 1].title;
+  }
   if ((s_view == VIEW_MESSAGES || s_view == VIEW_EXPANDED) && s_message_count > 0) {
     return prv_message_label(&s_messages[s_selected]);
   }
@@ -161,8 +163,12 @@ static const char *prv_list_title(int index) {
   if (s_view == VIEW_PROJECTS && index >= 0 && index < s_project_count) {
     return s_projects[index].title;
   }
-  if (s_view == VIEW_THREADS && index >= 0 && index < s_thread_count) {
-    return s_threads[index].title;
+  if (s_view == VIEW_THREADS) {
+    if (index == 0) return "+";
+    int thread_index = index - 1;
+    if (thread_index >= 0 && thread_index < s_thread_count) {
+      return s_threads[thread_index].title;
+    }
   }
   return "";
 }
@@ -171,8 +177,12 @@ static const char *prv_list_subtitle(int index) {
   if (s_view == VIEW_PROJECTS && index >= 0 && index < s_project_count) {
     return strlen(s_projects[index].status) > 0 ? s_projects[index].status : "Tap SELECT to view threads";
   }
-  if (s_view == VIEW_THREADS && index >= 0 && index < s_thread_count) {
-    return strlen(s_threads[index].status) > 0 ? s_threads[index].status : "Tap SELECT to view messages";
+  if (s_view == VIEW_THREADS) {
+    if (index == 0) return "";
+    int thread_index = index - 1;
+    if (thread_index >= 0 && thread_index < s_thread_count) {
+      return strlen(s_threads[thread_index].status) > 0 ? s_threads[thread_index].status : "Tap SELECT to view messages";
+    }
   }
   return "";
 }
@@ -225,7 +235,11 @@ static void prv_render(void) {
   } else if (s_loading) {
     snprintf(body, sizeof(body), "\n\n%s", s_status);
   } else if (count == 0) {
-    snprintf(body, sizeof(body), "\n\nNo items");
+    if (s_view == VIEW_MESSAGES) {
+      snprintf(body, sizeof(body), "\n\nBlank thread");
+    } else {
+      snprintf(body, sizeof(body), "\n\nNo items");
+    }
   } else if (prv_is_list_view()) {
     body[0] = '\0';
   } else if (s_view == VIEW_EXPANDED) {
@@ -256,7 +270,11 @@ static void prv_render(void) {
     if (s_view == VIEW_PROJECTS) {
       snprintf(footer, sizeof(footer), "%d/%d  SELECT opens threads", s_selected + 1, count);
     } else if (s_view == VIEW_THREADS) {
-      snprintf(footer, sizeof(footer), "%d/%d  SELECT opens messages", s_selected + 1, count);
+      if (s_selected == 0) {
+        snprintf(footer, sizeof(footer), "+  SELECT new thread");
+      } else {
+        snprintf(footer, sizeof(footer), "%d/%d  SELECT opens messages", s_selected, s_thread_count);
+      }
     } else if (s_view == VIEW_MESSAGES) {
       snprintf(footer, sizeof(footer), "%d/%d  UP older  DOWN newer", s_selected + 1, count);
     } else {
@@ -365,6 +383,13 @@ static void prv_list_update_proc(Layer *layer, GContext *ctx) {
                          GPoint(bounds.size.w - LIST_SIDE_PADDING, y + LIST_ROW_HEIGHT - 1));
     }
 
+    if (s_view == VIEW_THREADS && index == 0) {
+      graphics_context_set_text_color(ctx, highlighted ? GColorWhite : GColorCobaltBlue);
+      graphics_draw_text(ctx, "+", fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD),
+                         row_rect, GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+      continue;
+    }
+
     if (has_marker) {
       graphics_context_set_fill_color(ctx, GColorWhite);
       graphics_fill_circle(ctx, GPoint(LIST_SIDE_PADDING + 2, y + LIST_ROW_HEIGHT / 2), 4);
@@ -449,6 +474,19 @@ static void prv_request_messages(void) {
   prv_send_request(CMD_MESSAGES);
 }
 
+static void prv_open_new_thread(void) {
+  s_view = VIEW_MESSAGES;
+  s_loading = false;
+  s_message_count = 0;
+  s_selected = 0;
+  s_scroll = 0;
+  s_list_first = 0;
+  snprintf(s_thread_id, sizeof(s_thread_id), "pebble-thread:%lu:%lu",
+           (unsigned long)time(NULL), (unsigned long)s_seq);
+  prv_copy_cstr(s_status, sizeof(s_status), "Long SELECT to dictate");
+  prv_render();
+}
+
 static void prv_up_click(ClickRecognizerRef recognizer, void *context) {
   if (s_loading) return;
   if (s_view == VIEW_EXPANDED) {
@@ -518,8 +556,14 @@ static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
     prv_copy_cstr(s_project_id, sizeof(s_project_id), s_projects[s_selected].id);
     prv_request_threads();
   } else if (s_view == VIEW_THREADS && s_thread_count > 0) {
-    prv_copy_cstr(s_thread_id, sizeof(s_thread_id), s_threads[s_selected].id);
-    prv_request_messages();
+    if (s_selected == 0) {
+      prv_open_new_thread();
+    } else if (s_selected <= s_thread_count) {
+      prv_copy_cstr(s_thread_id, sizeof(s_thread_id), s_threads[s_selected - 1].id);
+      prv_request_messages();
+    }
+  } else if (s_view == VIEW_THREADS && s_thread_count == 0 && s_selected == 0) {
+    prv_open_new_thread();
   } else if (s_view == VIEW_MESSAGES && s_message_count > 0) {
     s_view = VIEW_EXPANDED;
     s_scroll = 0;
@@ -542,7 +586,7 @@ static void prv_dictation_callback(DictationSession *session, DictationSessionSt
 }
 
 static void prv_select_long_click(ClickRecognizerRef recognizer, void *context) {
-  if (s_loading || s_view != VIEW_MESSAGES || s_message_count == 0) return;
+  if (s_loading || s_view != VIEW_MESSAGES) return;
   if (!s_dictation) {
     s_dictation = dictation_session_create(512, prv_dictation_callback, NULL);
   }
