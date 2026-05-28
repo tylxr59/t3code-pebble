@@ -16,13 +16,13 @@ Useful T3 Code calls:
 - WebSocket token: `POST /api/auth/ws-token` with `Authorization: Bearer TOKEN`
 - WebSocket URL: `/ws?wsToken=SHORT_LIVED_TOKEN`
 
-The WebSocket transport is Effect RPC JSON frames, not JSON-RPC. Send requests like:
+The WebSocket transport uses T3 Code's tagged JSON RPC envelopes. Send requests like:
 
 ```json
 {"_tag":"Request","id":"1","tag":"orchestration.getArchivedShellSnapshot","payload":{},"headers":[]}
 ```
 
-Responses are `_tag: "Exit"` for unary calls and `_tag: "Chunk"` plus `_tag: "Exit"` for streams. Ack stream chunks with:
+Responses are `_tag: "Exit"` for completed calls and `_tag: "Chunk"` plus `_tag: "Exit"` for streams. Ack stream chunks with:
 
 ```json
 {"_tag":"Ack","requestId":"1"}

@@ -86,7 +86,7 @@ The app uses PebbleKitJS for all network access:
 
 - `POST /api/auth/bootstrap/bearer` exchanges the pairing code for a bearer session.
 - `POST /api/auth/ws-token` issues a short-lived WebSocket token.
-- `/ws?wsToken=...` is used with T3 Code's Effect RPC JSON frame protocol.
+- `/ws?wsToken=...` is used with T3 Code's tagged JSON RPC envelope protocol.
 
 Only the required RPC subset is implemented:
 
