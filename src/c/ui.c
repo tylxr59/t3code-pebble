@@ -102,6 +102,31 @@ static const char *prv_list_subtitle(int index) {
   return "";
 }
 
+static const ThreadItem *prv_thread_for_row(int index) {
+  if (!s_state || s_state->view != VIEW_THREADS || index <= 0) return NULL;
+  int thread_index = index - 1;
+  if (thread_index < 0 || thread_index >= s_state->thread_count) return NULL;
+  return &s_state->threads[thread_index];
+}
+
+static void prv_draw_working_icon(GContext *ctx, GRect rect, GColor color) {
+  int x = rect.origin.x;
+  int y = rect.origin.y;
+  graphics_context_set_stroke_color(ctx, color);
+  graphics_context_set_stroke_width(ctx, 4);
+  graphics_draw_line(ctx, GPoint(x + 2, y + 14), GPoint(x + 8, y + 8));
+  graphics_context_set_stroke_width(ctx, 6);
+  graphics_draw_line(ctx, GPoint(x + 6, y + 4), GPoint(x + 12, y + 10));
+  graphics_context_set_stroke_width(ctx, 3);
+  graphics_draw_line(ctx, GPoint(x + 10, y + 3), GPoint(x + 13, y + 6));
+  graphics_context_set_stroke_width(ctx, 1);
+}
+
+static void prv_draw_done_dot(GContext *ctx, GRect rect, GColor color) {
+  graphics_context_set_fill_color(ctx, color);
+  graphics_fill_circle(ctx, GPoint(rect.origin.x + 7, rect.origin.y + 8), 4);
+}
+
 static void prv_set_header(const char *title) {
   text_layer_set_text(s_header_layer, title);
 }
@@ -353,7 +378,19 @@ static void prv_list_update_proc(Layer *layer, GContext *ctx) {
                          NULL);
     }
 
+    const ThreadItem *thread = prv_thread_for_row(index);
+    bool has_thread_icon = thread && (thread->working || thread->unseen_done);
     int text_x = LIST_SIDE_PADDING + (has_marker ? LIST_MARKER_WIDTH + 4 : 0);
+    if (has_thread_icon) {
+      GColor icon_color = highlighted ? GColorWhite : (thread->working ? GColorCobaltBlue : GColorDarkGray);
+      GRect icon_rect = GRect(text_x, y + 5, 14, 16);
+      if (thread->working) {
+        prv_draw_working_icon(ctx, icon_rect, icon_color);
+      } else {
+        prv_draw_done_dot(ctx, icon_rect, icon_color);
+      }
+      text_x += 17;
+    }
     int text_w = bounds.size.w - text_x - LIST_SIDE_PADDING;
     GRect title_rect = GRect(text_x, y + 1, text_w, 22);
     GRect sub_rect = GRect(text_x, y + 21, text_w, 18);

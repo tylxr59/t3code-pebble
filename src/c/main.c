@@ -45,6 +45,7 @@ static void prv_render(void);
 static void prv_end_load(void);
 static void prv_send_cancel_poll(void);
 static void prv_request_timeout(void *context);
+static void prv_clear_thread_done_marker(const char *thread_id);
 
 static void prv_copy_cstr(char *dest, size_t len, const char *src) {
   if (!dest || len == 0) return;
@@ -199,6 +200,7 @@ static void prv_request_projects(void) {
 
 static void prv_request_threads(void) {
   s_thread_count = 0;
+  memset(s_threads, 0, sizeof(s_threads));
   s_view = VIEW_THREADS;
   prv_begin_load("Loading threads");
   prv_send_request(CMD_THREADS);
@@ -300,6 +302,7 @@ static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
       prv_open_new_thread();
     } else if (s_selected <= s_thread_count) {
       prv_copy_cstr(s_thread_id, sizeof(s_thread_id), s_threads[s_selected - 1].id);
+      prv_clear_thread_done_marker(s_thread_id);
       prv_request_messages();
     }
   } else if (s_view == VIEW_THREADS && s_thread_count == 0 && s_selected == 0) {
@@ -311,6 +314,16 @@ static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
   } else if (s_view == VIEW_EXPANDED) {
     s_view = VIEW_MESSAGES;
     prv_render();
+  }
+}
+
+static void prv_clear_thread_done_marker(const char *thread_id) {
+  if (!thread_id || strlen(thread_id) == 0) return;
+  for (int i = 0; i < s_thread_count; i++) {
+    if (strcmp(s_threads[i].id, thread_id) == 0) {
+      s_threads[i].unseen_done = false;
+      return;
+    }
   }
 }
 
@@ -349,6 +362,8 @@ static void prv_back_click(ClickRecognizerRef recognizer, void *context) {
     s_list_first = 0;
     prv_render();
   } else if (s_view == VIEW_THREADS) {
+    s_seq++;
+    prv_send_cancel_poll();
     s_view = VIEW_PROJECTS;
     s_selected = 0;
     s_list_first = 0;
@@ -403,6 +418,12 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
     if (s_view == VIEW_MESSAGES && total_tuple) {
       s_message_count = (int)total_tuple->value->int32;
       prv_copy_cstr(s_status, sizeof(s_status), status_tuple ? status_tuple->value->cstring : "");
+    } else if (s_view == VIEW_THREADS && total_tuple) {
+      s_thread_count = (int)total_tuple->value->int32;
+      if (status_tuple) prv_copy_cstr(s_status, sizeof(s_status), status_tuple->value->cstring);
+    } else if (s_view == VIEW_PROJECTS && total_tuple) {
+      s_project_count = (int)total_tuple->value->int32;
+      if (status_tuple) prv_copy_cstr(s_status, sizeof(s_status), status_tuple->value->cstring);
     } else if (status_tuple) {
       prv_copy_cstr(s_status, sizeof(s_status), status_tuple->value->cstring);
     }
@@ -429,6 +450,8 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
   Tuple *role = dict_find(iter, MESSAGE_KEY_Role);
   Tuple *text = dict_find(iter, MESSAGE_KEY_Text);
   Tuple *status = dict_find(iter, MESSAGE_KEY_Status);
+  Tuple *working = dict_find(iter, MESSAGE_KEY_Working);
+  Tuple *unseen_done = dict_find(iter, MESSAGE_KEY_UnseenDone);
 
   if (s_view == VIEW_PROJECTS && index < MAX_PROJECTS) {
     prv_copy_cstr(s_projects[index].id,
@@ -451,6 +474,8 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
     prv_copy_cstr(s_threads[index].status,
                   sizeof(s_threads[index].status),
                   status ? status->value->cstring : "");
+    s_threads[index].working = working && working->value->int32 != 0;
+    s_threads[index].unseen_done = unseen_done && unseen_done->value->int32 != 0;
     if (index >= s_thread_count) s_thread_count = index + 1;
   } else if (s_view == VIEW_MESSAGES && index < MAX_MESSAGES) {
     prv_copy_cstr(s_messages[index].id, sizeof(s_messages[index].id), "");

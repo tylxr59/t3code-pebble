@@ -14,6 +14,7 @@ var CMD_ERROR = 23;
 var REQUEST_TIMEOUT_MS = 20000;
 var SOCKET_TIMEOUT_MS = 30000;
 var POLL_INTERVAL_MS = 10000;
+var THREAD_POLL_INTERVAL_MS = 15000;
 var MAX_PROJECTS = 30;
 var MAX_THREADS = 40;
 var MAX_MESSAGES = 40;
@@ -25,6 +26,8 @@ var appMessageQueue = [];
 var appMessageBusy = false;
 var messageViewToken = 0;
 var activeMessagePoll = null;
+var activeThreadListPoll = null;
+var threadActivityById = {};
 
 function value(payload, name, fallback) {
   if (payload[name] !== undefined) return payload[name];
@@ -391,6 +394,13 @@ function cancelMessagePoll() {
   activeMessagePoll = null;
 }
 
+function cancelThreadListPoll() {
+  if (activeThreadListPoll && activeThreadListPoll.timer) {
+    clearTimeout(activeThreadListPoll.timer);
+  }
+  activeThreadListPoll = null;
+}
+
 function clearMessagePollTimer() {
   if (activeMessagePoll && activeMessagePoll.timer) {
     clearTimeout(activeMessagePoll.timer);
@@ -398,10 +408,8 @@ function clearMessagePollTimer() {
   }
 }
 
-function isTerminalSessionStatus(status) {
-  var text = String(status || "").toLowerCase();
-  return !text || text === "idle" || text === "ready" || text === "done" || text === "completed" ||
-         text === "failed" || text === "error" || text === "cancelled" || text === "canceled";
+function normalizedSessionStatus(status) {
+  return String(status || "").toLowerCase();
 }
 
 function isThreadWorking(thread) {
@@ -410,7 +418,42 @@ function isThreadWorking(thread) {
   for (var i = 0; i < messages.length; i++) {
     if (messages[i] && messages[i].streaming) return true;
   }
-  return !!(thread.session && !isTerminalSessionStatus(thread.session.status));
+  var status = thread.session ? normalizedSessionStatus(thread.session.status) : "";
+  return status === "running" || status === "connecting";
+}
+
+function hasUnseenCompletion(thread) {
+  if (!thread || !thread.latestTurn || !thread.latestTurn.completedAt) return false;
+  var completedAt = Date.parse(thread.latestTurn.completedAt);
+  if (isNaN(completedAt)) return false;
+  if (!thread.lastVisitedAt) return true;
+  var lastVisitedAt = Date.parse(thread.lastVisitedAt);
+  if (isNaN(lastVisitedAt)) return true;
+  return completedAt > lastVisitedAt;
+}
+
+function threadStatusText(thread, working) {
+  return working ? "Working" : "Ready";
+}
+
+function activityForThread(thread, working) {
+  var id = thread && thread.id;
+  if (!id) return { working: working, unseenDone: false };
+  var previous = threadActivityById[id] || {};
+  var unseenDone = !!previous.unseenDone || hasUnseenCompletion(thread);
+  if (previous.working && !working) unseenDone = true;
+  threadActivityById[id] = {
+    working: working,
+    unseenDone: unseenDone
+  };
+  return threadActivityById[id];
+}
+
+function clearThreadDone(threadId) {
+  if (!threadId) return;
+  var activity = threadActivityById[threadId] || {};
+  activity.unseenDone = false;
+  threadActivityById[threadId] = activity;
 }
 
 function scheduleMessagePoll(seq, threadId, token) {
@@ -430,8 +473,21 @@ function scheduleMessagePoll(seq, threadId, token) {
   };
 }
 
+function scheduleThreadListPoll(seq, projectId) {
+  cancelThreadListPoll();
+  activeThreadListPoll = {
+    projectId: projectId,
+    seq: seq,
+    timer: setTimeout(function() {
+      if (!activeThreadListPoll || activeThreadListPoll.projectId !== projectId || activeThreadListPoll.seq !== seq) return;
+      loadThreads(seq, projectId, { poll: true });
+    }, THREAD_POLL_INTERVAL_MS)
+  };
+}
+
 function loadProjects(seq) {
   cancelMessagePoll();
+  cancelThreadListPoll();
   sendStatus("Loading projects");
   loadShellSnapshot(seq, function(err, snapshot) {
     if (err) {
@@ -458,9 +514,10 @@ function loadProjects(seq) {
   });
 }
 
-function loadThreads(seq, projectId) {
+function loadThreads(seq, projectId, options) {
+  options = options || {};
   cancelMessagePoll();
-  sendStatus("Loading threads");
+  if (!options.poll) sendStatus("Loading threads");
   loadShellSnapshot(seq, function(err, snapshot) {
     if (err) {
       sendError(seq, err.message);
@@ -475,7 +532,11 @@ function loadThreads(seq, projectId) {
       return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
     });
     var count = Math.min(filtered.length, MAX_THREADS);
+    var anyWorking = false;
     for (var j = 0; j < count; j++) {
+      var working = isThreadWorking(filtered[j]);
+      var activity = activityForThread(filtered[j], working);
+      if (working) anyWorking = true;
       send({
         Command: CMD_ITEM,
         Seq: seq,
@@ -483,10 +544,17 @@ function loadThreads(seq, projectId) {
         Total: count,
         ThreadId: filtered[j].id,
         Title: truncate(filtered[j].title || "Thread", 64),
-        Status: filtered[j].session ? filtered[j].session.status : ""
+        Status: threadStatusText(filtered[j], working),
+        Working: working ? 1 : 0,
+        UnseenDone: activity.unseenDone ? 1 : 0
       });
     }
     send({ Command: CMD_DONE, Seq: seq, Total: count });
+    if (anyWorking) {
+      scheduleThreadListPoll(seq, projectId);
+    } else {
+      cancelThreadListPoll();
+    }
   });
 }
 
@@ -625,6 +693,12 @@ function sendTurn(seq, threadId, projectId, text) {
       sendError(seq, err.message);
       return;
     }
+    if (actualThreadId) {
+      threadActivityById[actualThreadId] = {
+        working: true,
+        unseenDone: false
+      };
+    }
     send({ Command: CMD_DONE, Seq: seq, ThreadId: actualThreadId, Status: "Sent" });
   }
   if (isLocalThreadId(threadId)) {
@@ -687,16 +761,21 @@ Pebble.addEventListener("appmessage", function(e) {
     loadThreads(seq, value(payload, "ProjectId", ""));
   } else if (command === CMD_MESSAGES) {
     cancelMessagePoll();
+    cancelThreadListPoll();
     var token = messageViewToken;
-    loadMessages(seq, value(payload, "ThreadId", ""), {
+    var threadId = value(payload, "ThreadId", "");
+    clearThreadDone(threadId);
+    loadMessages(seq, threadId, {
       status: "Loading messages",
       trackWorking: true,
       viewToken: token
     });
   } else if (command === CMD_SEND) {
     cancelMessagePoll();
+    cancelThreadListPoll();
     sendTurn(seq, value(payload, "ThreadId", ""), value(payload, "ProjectId", ""), value(payload, "Text", ""));
   } else if (command === CMD_CANCEL) {
     cancelMessagePoll();
+    cancelThreadListPoll();
   }
 });

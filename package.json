@@ -29,6 +29,8 @@
       "Role",
       "Text",
       "Status",
+      "Working",
+      "UnseenDone",
       "Error"
     ],
     "resources": {

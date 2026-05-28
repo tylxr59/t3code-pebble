@@ -26,6 +26,8 @@ typedef struct {
   char id[ID_LEN];
   char title[TITLE_LEN];
   char status[32];
+  bool working;
+  bool unseen_done;
 } ThreadItem;
 
 typedef struct {
