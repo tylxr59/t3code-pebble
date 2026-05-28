@@ -6,6 +6,16 @@ Pebble Time 2 watch app for browsing a remote T3 Code instance and sending dicta
 
 - Pebble Time 2 / `emery`
 
+## Screenshots
+
+| Projects | Threads |
+| --- | --- |
+| ![Projects](https://github.com/tylxr59/t3code-pebble/blob/main/screenshots/screenshot_1.png?raw=true) | ![Threads](https://github.com/tylxr59/t3code-pebble/blob/main/screenshots/screenshot_2.png?raw=true) |
+
+| User Message | AI Response |
+| --- | --- |
+| ![Messages](https://github.com/tylxr59/t3code-pebble/blob/main/screenshots/screenshot_3.png?raw=true) | ![Message detail](https://github.com/tylxr59/t3code-pebble/blob/main/screenshots/screenshot_4.png?raw=true) |
+
 ## Setup
 
 1. Expose T3 Code on a reachable address, for example `http://192.168.1.2:3773/`.
