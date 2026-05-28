@@ -152,7 +152,8 @@ static bool prv_is_list_view(void) {
 }
 
 static bool prv_is_nav_loading(void) {
-  return s_loading && (s_view == VIEW_PROJECTS || s_view == VIEW_THREADS);
+  return s_loading && (s_view == VIEW_PROJECTS || s_view == VIEW_THREADS ||
+                       (s_view == VIEW_MESSAGES && strcmp(s_status, "Loading messages") == 0));
 }
 
 static bool prv_is_message_view(void) {
@@ -426,13 +427,13 @@ static void prv_message_update_proc(Layer *layer, GContext *ctx) {
 
   GRect bubble_rect = GRect(bubble_x, 21, bubble_w, bounds.size.h - 24);
   if (is_user) {
-    graphics_context_set_fill_color(ctx, GColorWhite);
-    graphics_fill_rect(ctx, bubble_rect, 0, GCornerNone);
+    graphics_context_set_fill_color(ctx, GColorLightGray);
+    graphics_fill_rect(ctx, bubble_rect, 5, GCornersAll);
     graphics_context_set_stroke_color(ctx, GColorLightGray);
-    graphics_draw_rect(ctx, bubble_rect);
+    graphics_draw_round_rect(ctx, bubble_rect, 5);
   } else {
     graphics_context_set_fill_color(ctx, GColorCeleste);
-    graphics_fill_rect(ctx, bubble_rect, 0, GCornerNone);
+    graphics_fill_rect(ctx, bubble_rect, 5, GCornersAll);
   }
 
   GRect text_rect = GRect(bubble_rect.origin.x + 6, bubble_rect.origin.y + 4,
