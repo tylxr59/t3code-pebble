@@ -1,6 +1,18 @@
 # T3 Code for Pebble
 
-Pebble Time 2 watch app for browsing a remote T3 Code instance and sending dictated messages to an existing thread.
+Vibecode from your wrist.
+
+T3 Code for Pebble turns a Pebble Time 2 into a tiny remote control for your T3 Code workspace. Browse active projects, jump into threads, read the latest model responses, and dictate a new prompt without pulling out a laptop or phone.
+
+It is not trying to be a full IDE on a 200x228 screen. It is a fast, glanceable way to keep an agent moving when you are away from your keyboard: check whether a thread is still working, skim the newest answer, or send the next instruction the moment it occurs to you.
+
+## Why It Is Cool
+
+- **Wrist-first coding flow:** long-press `SELECT`, dictate a prompt, and send it into an existing or brand-new T3 Code thread.
+- **Live workspace awareness:** projects and threads come from the active T3 Code shell snapshot, so the watch reflects what your remote instance is actually doing.
+- **Agent check-ins without context switching:** glance at recent messages and thread status from the same device you already use for notifications.
+- **Phone as the bridge, watch as the cockpit:** PebbleKitJS handles auth and WebSocket traffic through the paired phone while the watch keeps the UI simple and button-driven.
+- **Built for Pebble Time 2:** color accents, compact lists, message bubbles, dictation, and button navigation are tuned for `emery`.
 
 ## Supported Device
 
@@ -27,6 +39,15 @@ Pebble Time 2 watch app for browsing a remote T3 Code instance and sending dicta
 
 The pairing code is exchanged for a bearer session token and is not needed again unless the server session is revoked.
 
+## What You Can Do
+
+- Browse recent T3 Code projects.
+- Open a project and inspect active, non-archived threads.
+- Read the latest messages in a thread, including expanded message detail.
+- Start a new thread from the watch.
+- Dictate and send a new user message to the selected thread.
+- Poll while a thread is working so the watch can update when the agent responds.
+
 ## Controls
 
 - Project list: `UP` / `DOWN` moves, `SELECT` opens threads.
@@ -51,7 +72,7 @@ The app uses PebbleKitJS for all network access:
 
 - `POST /api/auth/bootstrap/bearer` exchanges the pairing code for a bearer session.
 - `POST /api/auth/ws-token` issues a short-lived WebSocket token.
-- `/ws?wsToken=...` is used with T3 Code's Effect JSON-RPC protocol.
+- `/ws?wsToken=...` is used with T3 Code's Effect RPC JSON frame protocol.
 
 Only the required RPC subset is implemented:
 
