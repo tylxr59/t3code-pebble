@@ -24,3 +24,4 @@ void ui_create(Window *window, UiState *state);
 void ui_destroy(void);
 void ui_render(void);
 int ui_list_visible_rows(void);
+int ui_expanded_max_scroll(void);

@@ -5,6 +5,7 @@
 #define LIST_SIDE_PADDING 8
 #define LIST_MARKER_WIDTH 8
 #define COLOR_BAR_HEIGHT 3
+#define BODY_MAX_LAYOUT_HEIGHT 2000
 
 static Layer *s_accent_layer;
 static Layer *s_loading_layer;
@@ -12,11 +13,13 @@ static Layer *s_list_layer;
 static Layer *s_message_layer;
 static Layer *s_blank_layer;
 static Layer *s_footer_bg_layer;
+static ScrollLayer *s_body_scroll_layer;
 static TextLayer *s_header_layer;
 static TextLayer *s_body_layer;
 static TextLayer *s_footer_layer;
 static AppTimer *s_loading_timer;
 static UiState *s_state;
+static int s_expanded_max_scroll;
 
 static const GColor s_accent_colors[] = {
     {.argb = GColorPictonBlueARGB8},
@@ -109,6 +112,13 @@ static const ThreadItem *prv_thread_for_row(int index) {
   return &s_state->threads[thread_index];
 }
 
+static const ProjectItem *prv_project_for_row(int index) {
+  if (!s_state || s_state->view != VIEW_PROJECTS || index < 0 || index >= s_state->project_count) {
+    return NULL;
+  }
+  return &s_state->projects[index];
+}
+
 static void prv_draw_working_icon(GContext *ctx, GRect rect, GColor color) {
   int x = rect.origin.x;
   int y = rect.origin.y;
@@ -148,6 +158,37 @@ int ui_list_visible_rows(void) {
   GRect bounds = layer_get_bounds(s_list_layer);
   int visible_rows = bounds.size.h / LIST_ROW_HEIGHT;
   return visible_rows < 1 ? 1 : visible_rows;
+}
+
+int ui_expanded_max_scroll(void) {
+  return s_expanded_max_scroll;
+}
+
+static void prv_update_body_layout(const char *body) {
+  GRect viewport = layer_get_bounds(scroll_layer_get_layer(s_body_scroll_layer));
+  int content_height = viewport.size.h;
+  s_expanded_max_scroll = 0;
+
+  if (s_state->view == VIEW_EXPANDED) {
+    GFont font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
+    GRect layout_rect = GRect(0, 0, viewport.size.w - 16, BODY_MAX_LAYOUT_HEIGHT);
+    GSize content_size = graphics_text_layout_get_content_size(
+        body, font, layout_rect, GTextOverflowModeWordWrap, GTextAlignmentLeft);
+    content_height = content_size.h + 4;
+    if (content_height < viewport.size.h) content_height = viewport.size.h;
+    s_expanded_max_scroll = content_height - viewport.size.h;
+    if (s_state->scroll > s_expanded_max_scroll) s_state->scroll = s_expanded_max_scroll;
+    if (s_state->scroll < 0) s_state->scroll = 0;
+    text_layer_set_overflow_mode(s_body_layer, GTextOverflowModeWordWrap);
+  } else {
+    s_state->scroll = 0;
+    text_layer_set_overflow_mode(s_body_layer, GTextOverflowModeTrailingEllipsis);
+  }
+
+  layer_set_frame(text_layer_get_layer(s_body_layer),
+                  GRect(8, 0, viewport.size.w - 16, content_height));
+  scroll_layer_set_content_size(s_body_scroll_layer, GSize(viewport.size.w, content_height));
+  scroll_layer_set_content_offset(s_body_scroll_layer, GPoint(0, -s_state->scroll), false);
 }
 
 static void prv_list_clamp_page(void) {
@@ -197,10 +238,7 @@ void ui_render(void) {
     body[0] = '\0';
   } else if (s_state->view == VIEW_EXPANDED) {
     const MessageItem *msg = &s_state->messages[s_state->selected];
-    int len = strlen(msg->text);
-    int start = s_state->scroll;
-    if (start > len) start = len;
-    snprintf(body, sizeof(body), "%s", msg->text + start);
+    snprintf(body, sizeof(body), "%s", msg->text);
   } else if (s_state->view == VIEW_MESSAGES) {
     body[0] = '\0';
   } else if (s_state->view == VIEW_THREADS) {
@@ -247,8 +285,9 @@ void ui_render(void) {
   }
 
   text_layer_set_text(s_body_layer, body);
+  prv_update_body_layout(body);
   text_layer_set_text(s_footer_layer, footer);
-  layer_set_hidden(text_layer_get_layer(s_body_layer),
+  layer_set_hidden(scroll_layer_get_layer(s_body_scroll_layer),
                    prv_is_nav_loading() || prv_is_list_view() || prv_is_message_view());
   layer_set_hidden(s_loading_layer, !prv_is_nav_loading());
   layer_set_hidden(s_list_layer, !prv_is_list_view());
@@ -372,13 +411,16 @@ static void prv_list_update_proc(Layer *layer, GContext *ctx) {
     }
 
     const ThreadItem *thread = prv_thread_for_row(index);
-    bool has_thread_icon = thread && (thread->working || thread->unseen_done);
+    const ProjectItem *project = prv_project_for_row(index);
+    bool project_working = project && project->working;
+    bool has_activity_icon =
+        project_working || (thread && (thread->working || thread->unseen_done));
     int text_x = LIST_SIDE_PADDING + (has_marker ? LIST_MARKER_WIDTH + 4 : 0);
-    if (has_thread_icon) {
-      GColor icon_color =
-          highlighted ? GColorWhite : (thread->working ? GColorCobaltBlue : GColorDarkGray);
+    if (has_activity_icon) {
+      bool working = project_working || (thread && thread->working);
+      GColor icon_color = highlighted ? GColorWhite : (working ? GColorCobaltBlue : GColorDarkGray);
       GRect icon_rect = GRect(text_x, y + 5, 14, 16);
-      if (thread->working) {
+      if (working) {
         prv_draw_working_icon(ctx, icon_rect, icon_color);
       } else {
         prv_draw_done_dot(ctx, icon_rect, icon_color);
@@ -502,10 +544,13 @@ void ui_create(Window *window, UiState *state) {
   text_layer_set_text_color(s_header_layer, GColorBlack);
   layer_add_child(root, text_layer_get_layer(s_header_layer));
 
-  s_body_layer = text_layer_create(GRect(8, 32, bounds.size.w - 16, 164));
+  s_body_scroll_layer = scroll_layer_create(GRect(0, 32, bounds.size.w, 164));
+  layer_add_child(root, scroll_layer_get_layer(s_body_scroll_layer));
+
+  s_body_layer = text_layer_create(GRect(8, 0, bounds.size.w - 16, 164));
   text_layer_set_font(s_body_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_overflow_mode(s_body_layer, GTextOverflowModeTrailingEllipsis);
-  layer_add_child(root, text_layer_get_layer(s_body_layer));
+  scroll_layer_add_child(s_body_scroll_layer, text_layer_get_layer(s_body_layer));
 
   s_loading_layer = layer_create(GRect(0, 31, bounds.size.w, 168));
   layer_set_update_proc(s_loading_layer, prv_loading_update_proc);
@@ -552,6 +597,7 @@ void ui_destroy(void) {
   layer_destroy(s_footer_bg_layer);
   text_layer_destroy(s_header_layer);
   text_layer_destroy(s_body_layer);
+  scroll_layer_destroy(s_body_scroll_layer);
   text_layer_destroy(s_footer_layer);
   s_state = NULL;
 }

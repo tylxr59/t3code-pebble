@@ -13,6 +13,7 @@
 #define CMD_DONE 21
 #define CMD_STATUS 22
 #define CMD_ERROR 23
+#define EXPANDED_SCROLL_STEP 120
 
 static Window *s_window;
 static DictationSession *s_dictation;
@@ -193,6 +194,7 @@ static void prv_request_timeout(void *context) {
 
 static void prv_request_projects(void) {
   s_project_count = 0;
+  memset(s_projects, 0, sizeof(s_projects));
   s_view = VIEW_PROJECTS;
   prv_begin_load("Loading projects");
   prv_send_request(CMD_PROJECTS);
@@ -208,6 +210,7 @@ static void prv_request_threads(void) {
 
 static void prv_request_messages(void) {
   s_message_count = 0;
+  memset(s_messages, 0, sizeof(s_messages));
   s_view = VIEW_MESSAGES;
   prv_begin_load("Loading messages");
   prv_send_request(CMD_MESSAGES);
@@ -232,7 +235,7 @@ static void prv_open_new_thread(void) {
 static void prv_up_click(ClickRecognizerRef recognizer, void *context) {
   if (s_loading) return;
   if (s_view == VIEW_EXPANDED) {
-    s_scroll = s_scroll > 80 ? s_scroll - 80 : 0;
+    s_scroll = s_scroll > EXPANDED_SCROLL_STEP ? s_scroll - EXPANDED_SCROLL_STEP : 0;
   } else if (s_view == VIEW_PROJECTS || s_view == VIEW_THREADS) {
     int count = prv_current_count();
     int visible_rows = prv_list_visible_rows();
@@ -263,8 +266,9 @@ static void prv_up_click(ClickRecognizerRef recognizer, void *context) {
 static void prv_down_click(ClickRecognizerRef recognizer, void *context) {
   if (s_loading) return;
   if (s_view == VIEW_EXPANDED) {
-    int len = strlen(s_messages[s_selected].text);
-    if (s_scroll + 80 < len) s_scroll += 80;
+    int max_scroll = ui_expanded_max_scroll();
+    s_scroll += EXPANDED_SCROLL_STEP;
+    if (s_scroll > max_scroll) s_scroll = max_scroll;
   } else if (s_view == VIEW_PROJECTS || s_view == VIEW_THREADS) {
     int count = prv_current_count();
     int visible_rows = prv_list_visible_rows();
@@ -350,25 +354,29 @@ static void prv_select_long_click(ClickRecognizerRef recognizer, void *context) 
 }
 
 static void prv_back_click(ClickRecognizerRef recognizer, void *context) {
-  if (s_loading) return;
   if (s_view == VIEW_EXPANDED) {
     s_view = VIEW_MESSAGES;
     prv_render();
   } else if (s_view == VIEW_MESSAGES) {
     s_seq++;
+    prv_end_load();
+    s_refresh_after_send = false;
     prv_send_cancel_poll();
     s_view = VIEW_THREADS;
     s_selected = 0;
     s_list_first = 0;
     prv_render();
   } else if (s_view == VIEW_THREADS) {
-    s_seq++;
-    prv_send_cancel_poll();
-    s_view = VIEW_PROJECTS;
-    s_selected = 0;
-    s_list_first = 0;
-    prv_render();
+    prv_end_load();
+    s_refresh_after_send = false;
+    prv_request_projects();
   } else {
+    if (s_loading) {
+      s_seq++;
+      prv_end_load();
+      s_refresh_after_send = false;
+      prv_send_cancel_poll();
+    }
     window_stack_pop(true);
   }
 }
@@ -388,9 +396,11 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
 
   Tuple *seq_tuple = dict_find(iter, MESSAGE_KEY_Seq);
   uint32_t seq = seq_tuple ? seq_tuple->value->uint32 : 0;
-  if (seq != 0 && seq < s_seq) return;
+  if (seq != 0 && seq != s_seq) return;
+  if (seq == 0 && command != CMD_STATUS) return;
 
   if (command == CMD_STATUS) {
+    if (seq == 0 && s_loading) return;
     Tuple *status_tuple = dict_find(iter, MESSAGE_KEY_Status);
     prv_copy_cstr(s_status, sizeof(s_status), status_tuple ? status_tuple->value->cstring : "");
     prv_render();
@@ -417,12 +427,18 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
     Tuple *total_tuple = dict_find(iter, MESSAGE_KEY_Total);
     if (s_view == VIEW_MESSAGES && total_tuple) {
       s_message_count = (int)total_tuple->value->int32;
+      if (s_message_count < 0) s_message_count = 0;
+      if (s_message_count > MAX_MESSAGES) s_message_count = MAX_MESSAGES;
       prv_copy_cstr(s_status, sizeof(s_status), status_tuple ? status_tuple->value->cstring : "");
     } else if (s_view == VIEW_THREADS && total_tuple) {
       s_thread_count = (int)total_tuple->value->int32;
+      if (s_thread_count < 0) s_thread_count = 0;
+      if (s_thread_count > MAX_THREADS) s_thread_count = MAX_THREADS;
       if (status_tuple) prv_copy_cstr(s_status, sizeof(s_status), status_tuple->value->cstring);
     } else if (s_view == VIEW_PROJECTS && total_tuple) {
       s_project_count = (int)total_tuple->value->int32;
+      if (s_project_count < 0) s_project_count = 0;
+      if (s_project_count > MAX_PROJECTS) s_project_count = MAX_PROJECTS;
       if (status_tuple) prv_copy_cstr(s_status, sizeof(s_status), status_tuple->value->cstring);
     } else if (status_tuple) {
       prv_copy_cstr(s_status, sizeof(s_status), status_tuple->value->cstring);
@@ -463,6 +479,7 @@ static void prv_inbox_received(DictionaryIterator *iter, void *context) {
     prv_copy_cstr(s_projects[index].status,
                   sizeof(s_projects[index].status),
                   status ? status->value->cstring : "");
+    s_projects[index].working = working && working->value->int32 != 0;
     if (index >= s_project_count) s_project_count = index + 1;
   } else if (s_view == VIEW_THREADS && index < MAX_THREADS) {
     prv_copy_cstr(s_threads[index].id,

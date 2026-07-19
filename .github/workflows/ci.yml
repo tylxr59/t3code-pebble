@@ -18,15 +18,17 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+      PEBBLE_TOOL_VERSION: "5.0.39"
+      PEBBLE_SDK_VERSION: "4.17"
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: "npm"
@@ -43,8 +45,8 @@ jobs:
 
       - name: Install Pebble SDK
         run: |
-          uv tool install pebble-tool
-          pebble sdk install latest
+          uv tool install "pebble-tool==$PEBBLE_TOOL_VERSION"
+          pebble sdk install "$PEBBLE_SDK_VERSION"
           pebble --version
 
       - name: Install dependencies
@@ -66,7 +68,7 @@ jobs:
           if ! compgen -G "build/*.pbw" >/dev/null; then pebble build; fi
 
       - name: Upload PBW artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: t3code-pebble-pbw
           path: build/*.pbw

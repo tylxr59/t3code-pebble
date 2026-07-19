@@ -18,7 +18,9 @@ var THREAD_POLL_INTERVAL_MS = 15000;
 var MAX_PROJECTS = 30;
 var MAX_THREADS = 40;
 var MAX_MESSAGES = 40;
-var MAX_TEXT = 520;
+var MAX_TEXT_BYTES = 600;
+var DEFAULT_RUNTIME_MODE = "full-access";
+var DEFAULT_INTERACTION_MODE = "default";
 
 var OAUTH_TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
 var OAUTH_ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
@@ -31,7 +33,10 @@ var appMessageBusy = false;
 var messageViewToken = 0;
 var activeMessagePoll = null;
 var activeThreadListPoll = null;
+var activeProjectListPoll = null;
 var threadActivityById = {};
+var threadPreferencesById = {};
+var activeWatchSeq = 0;
 
 function value(payload, name, fallback) {
   if (payload[name] !== undefined) return payload[name];
@@ -68,7 +73,8 @@ function htmlEscape(text) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function jsEscape(text) {
@@ -135,9 +141,56 @@ function wsBaseUrl() {
   return wsUrl.replace(/\/+$/, "") + "/ws";
 }
 
+function appMessageEntry(dict, terminal) {
+  return {
+    dict: dict,
+    attempts: 0,
+    seq: Number(dict.Seq || 0),
+    terminal: !!terminal
+  };
+}
+
 function send(dict) {
-  appMessageQueue.push({ dict: dict, attempts: 0 });
+  var entry = appMessageEntry(dict, false);
+  if (entry.seq && activeWatchSeq && entry.seq !== activeWatchSeq) return;
+  appMessageQueue.push(entry);
   pumpAppMessageQueue();
+}
+
+function beginWatchRequest(seq) {
+  seq = Number(seq || 0);
+  if (!seq) return;
+  activeWatchSeq = seq;
+
+  var keep = [];
+  var start = 0;
+  if (appMessageBusy && appMessageQueue.length > 0) {
+    keep.push(appMessageQueue[0]);
+    start = 1;
+  }
+  for (var i = start; i < appMessageQueue.length; i++) {
+    if (appMessageQueue[i].seq === 0 || appMessageQueue[i].seq === seq) {
+      keep.push(appMessageQueue[i]);
+    }
+  }
+  appMessageQueue = keep;
+}
+
+function failAppMessageEntry(entry, error) {
+  console.log("sendAppMessage failed: " + JSON.stringify(error));
+  appMessageQueue.shift();
+  if (!entry.seq || entry.seq !== activeWatchSeq || entry.terminal) return;
+
+  var remaining = [];
+  for (var i = 0; i < appMessageQueue.length; i++) {
+    if (appMessageQueue[i].seq !== entry.seq) remaining.push(appMessageQueue[i]);
+  }
+  appMessageQueue = remaining;
+  appMessageQueue.unshift(appMessageEntry({
+    Command: CMD_ERROR,
+    Seq: entry.seq,
+    Error: "Phone delivery failed"
+  }, true));
 }
 
 function pumpAppMessageQueue() {
@@ -151,25 +204,65 @@ function pumpAppMessageQueue() {
   }, function(e) {
     entry.attempts++;
     appMessageBusy = false;
-    if (entry.attempts >= 3) {
-      console.log("sendAppMessage failed: " + JSON.stringify(e));
+    if (entry.seq && activeWatchSeq && entry.seq !== activeWatchSeq) {
       appMessageQueue.shift();
+    } else if (entry.attempts >= 3) {
+      failAppMessageEntry(entry, e);
     }
     setTimeout(pumpAppMessageQueue, 250);
   });
 }
 
-function sendStatus(text) {
-  send({ Command: CMD_STATUS, Status: truncate(text, 80) });
+function sendStatus(seq, text) {
+  send({ Command: CMD_STATUS, Seq: seq || 0, Status: truncateUtf8(text, 80) });
+}
+
+function sendGlobalStatus(text) {
+  sendStatus(0, text);
 }
 
 function sendError(seq, text) {
-  send({ Command: CMD_ERROR, Seq: seq || 0, Error: truncate(text, 120) });
+  send({ Command: CMD_ERROR, Seq: seq || 0, Error: truncateUtf8(text, 90) });
 }
 
 function truncate(text, max) {
   text = String(text || "");
   return text.length > max ? text.slice(0, Math.max(0, max - 3)) + "..." : text;
+}
+
+function utf8CharSize(text, index) {
+  var code = text.charCodeAt(index);
+  if (code < 0x80) return { bytes: 1, units: 1 };
+  if (code < 0x800) return { bytes: 2, units: 1 };
+  if (code >= 0xd800 && code <= 0xdbff && index + 1 < text.length) {
+    var next = text.charCodeAt(index + 1);
+    if (next >= 0xdc00 && next <= 0xdfff) return { bytes: 4, units: 2 };
+  }
+  return { bytes: 3, units: 1 };
+}
+
+function truncateUtf8(text, maxBytes) {
+  text = String(text || "");
+  var bytes = 0;
+  var index = 0;
+  while (index < text.length) {
+    var size = utf8CharSize(text, index);
+    if (bytes + size.bytes > maxBytes) break;
+    bytes += size.bytes;
+    index += size.units;
+  }
+  if (index === text.length) return text;
+
+  var limit = Math.max(0, maxBytes - 3);
+  bytes = 0;
+  index = 0;
+  while (index < text.length) {
+    var truncatedSize = utf8CharSize(text, index);
+    if (bytes + truncatedSize.bytes > limit) break;
+    bytes += truncatedSize.bytes;
+    index += truncatedSize.units;
+  }
+  return text.slice(0, index) + (maxBytes >= 3 ? "..." : "");
 }
 
 function basename(path) {
@@ -198,29 +291,33 @@ function request(url, method, body, bearerToken, contentType, callback) {
     callback(err, data);
   }
 
-  req.open(method || "GET", url, true);
-  if (contentType) req.setRequestHeader("content-type", contentType);
-  if (bearerToken) req.setRequestHeader("authorization", "Bearer " + bearerToken);
-  req.onload = function() {
-    var data = null;
-    try {
-      data = req.responseText ? JSON.parse(req.responseText) : null;
-    } catch (e) {
-      done(new Error("Bad JSON"));
-      return;
-    }
-    if (req.status < 200 || req.status >= 300) {
-      var message = data && (data.error || data.reason || data.message) ?
-        data.error || data.reason || data.message : "HTTP " + req.status;
-      var httpError = new Error(message);
-      httpError.status = req.status;
-      done(httpError);
-      return;
-    }
-    done(null, data);
-  };
-  req.onerror = function() { done(new Error("NETWORK")); };
-  req.send(body === undefined ? null : body);
+  try {
+    req.open(method || "GET", url, true);
+    if (contentType) req.setRequestHeader("content-type", contentType);
+    if (bearerToken) req.setRequestHeader("authorization", "Bearer " + bearerToken);
+    req.onload = function() {
+      var data = null;
+      try {
+        data = req.responseText ? JSON.parse(req.responseText) : null;
+      } catch (e) {
+        done(new Error("Bad JSON"));
+        return;
+      }
+      if (req.status < 200 || req.status >= 300) {
+        var message = data && (data.error || data.reason || data.message) ?
+          data.error || data.reason || data.message : "HTTP " + req.status;
+        var httpError = new Error(message);
+        httpError.status = req.status;
+        done(httpError);
+        return;
+      }
+      done(null, data);
+    };
+    req.onerror = function() { done(new Error("NETWORK")); };
+    req.send(body === undefined ? null : body);
+  } catch (e) {
+    done(e instanceof Error ? e : new Error(String(e)));
+  }
 }
 
 function requestJson(url, method, body, bearerToken, callback) {
@@ -267,6 +364,10 @@ function exchangePairingCode(pairingCode, callback) {
 
 function ensureBearerToken(callback) {
   var settings = readSettings();
+  if (!normalizeBaseUrl(settings.baseUrl)) {
+    callback(new Error("Set server URL"));
+    return;
+  }
   if (settings.bearerToken) {
     callback(null, settings.bearerToken);
     return;
@@ -459,6 +560,13 @@ function cancelThreadListPoll() {
   activeThreadListPoll = null;
 }
 
+function cancelProjectListPoll() {
+  if (activeProjectListPoll && activeProjectListPoll.timer) {
+    clearTimeout(activeProjectListPoll.timer);
+  }
+  activeProjectListPoll = null;
+}
+
 function clearMessagePollTimer() {
   if (activeMessagePoll && activeMessagePoll.timer) {
     clearTimeout(activeMessagePoll.timer);
@@ -477,7 +585,7 @@ function isThreadWorking(thread) {
     if (messages[i] && messages[i].streaming) return true;
   }
   var status = thread.session ? normalizedSessionStatus(thread.session.status) : "";
-  return status === "running" || status === "connecting";
+  return status === "starting" || status === "running" || status === "connecting";
 }
 
 function hasUnseenCompletion(thread) {
@@ -492,6 +600,29 @@ function hasUnseenCompletion(thread) {
 
 function threadStatusText(thread, working) {
   return working ? "Working" : "Ready";
+}
+
+function preferencesForThread(thread) {
+  thread = thread || {};
+  return {
+    modelSelection: thread.modelSelection || null,
+    runtimeMode: thread.runtimeMode ||
+      (thread.session && thread.session.runtimeMode) || DEFAULT_RUNTIME_MODE,
+    interactionMode: thread.interactionMode || DEFAULT_INTERACTION_MODE
+  };
+}
+
+function rememberThreadPreferences(thread) {
+  if (!thread || !thread.id) return;
+  threadPreferencesById[thread.id] = preferencesForThread(thread);
+}
+
+function savedThreadPreferences(threadId) {
+  return threadPreferencesById[threadId] || {
+    modelSelection: null,
+    runtimeMode: DEFAULT_RUNTIME_MODE,
+    interactionMode: DEFAULT_INTERACTION_MODE
+  };
 }
 
 function activityForThread(thread, working) {
@@ -543,16 +674,38 @@ function scheduleThreadListPoll(seq, projectId) {
   };
 }
 
-function loadProjects(seq) {
+function scheduleProjectListPoll(seq) {
+  cancelProjectListPoll();
+  activeProjectListPoll = {
+    seq: seq,
+    timer: setTimeout(function() {
+      if (!activeProjectListPoll || activeProjectListPoll.seq !== seq) return;
+      loadProjects(seq, { poll: true });
+    }, THREAD_POLL_INTERVAL_MS)
+  };
+}
+
+function loadProjects(seq, options) {
+  options = options || {};
   cancelMessagePoll();
   cancelThreadListPoll();
-  sendStatus("Loading projects");
+  if (!options.poll) sendStatus(seq, "Loading projects");
   loadShellSnapshot(seq, function(err, snapshot) {
     if (err) {
       sendError(seq, err.message);
       return;
     }
     var projects = snapshot && snapshot.projects ? snapshot.projects : [];
+    var threads = snapshot && snapshot.threads ? snapshot.threads : [];
+    var workingByProject = {};
+    var anyWorking = false;
+    for (var threadIndex = 0; threadIndex < threads.length; threadIndex++) {
+      if (threads[threadIndex].projectId && !threads[threadIndex].archivedAt &&
+          isThreadWorking(threads[threadIndex])) {
+        workingByProject[threads[threadIndex].projectId] = true;
+        anyWorking = true;
+      }
+    }
     projects.sort(function(a, b) {
       return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
     });
@@ -564,18 +717,26 @@ function loadProjects(seq) {
         Index: i,
         Total: count,
         ProjectId: projects[i].id,
-        Title: truncate(projects[i].title || basename(projects[i].workspaceRoot) || "Project", 64),
-        Status: truncate(basename(projects[i].workspaceRoot) || projects[i].workspaceRoot || "Project workspace", 28)
+        Title: truncateUtf8(projects[i].title || basename(projects[i].workspaceRoot) || "Project", 88),
+        Status: truncateUtf8(basename(projects[i].workspaceRoot) ||
+          projects[i].workspaceRoot || "Project workspace", 30),
+        Working: workingByProject[projects[i].id] ? 1 : 0
       });
     }
     send({ Command: CMD_DONE, Seq: seq, Total: count });
+    if (anyWorking) {
+      scheduleProjectListPoll(seq);
+    } else {
+      cancelProjectListPoll();
+    }
   });
 }
 
 function loadThreads(seq, projectId, options) {
   options = options || {};
   cancelMessagePoll();
-  if (!options.poll) sendStatus("Loading threads");
+  cancelProjectListPoll();
+  if (!options.poll) sendStatus(seq, "Loading threads");
   loadShellSnapshot(seq, function(err, snapshot) {
     if (err) {
       sendError(seq, err.message);
@@ -592,6 +753,7 @@ function loadThreads(seq, projectId, options) {
     var count = Math.min(filtered.length, MAX_THREADS);
     var anyWorking = false;
     for (var j = 0; j < count; j++) {
+      rememberThreadPreferences(filtered[j]);
       var working = isThreadWorking(filtered[j]);
       var activity = activityForThread(filtered[j], working);
       if (working) anyWorking = true;
@@ -601,7 +763,7 @@ function loadThreads(seq, projectId, options) {
         Index: j,
         Total: count,
         ThreadId: filtered[j].id,
-        Title: truncate(filtered[j].title || "Thread", 64),
+        Title: truncateUtf8(filtered[j].title || "Thread", 88),
         Status: threadStatusText(filtered[j], working),
         Working: working ? 1 : 0,
         UnseenDone: activity.unseenDone ? 1 : 0
@@ -620,11 +782,12 @@ function loadMessages(seq, threadId, options) {
   options = options || {};
   var viewToken = options.viewToken;
   if (viewToken !== undefined && viewToken !== messageViewToken) return;
-  sendStatus(options.status || "Loading messages");
+  sendStatus(seq, options.status || "Loading messages");
   rpc("orchestration.subscribeThread", { threadId: threadId }, function(item) {
     if (viewToken !== undefined && viewToken !== messageViewToken) return true;
     if (!item || item.kind !== "snapshot" || !item.snapshot.thread) return;
     var thread = item.snapshot.thread;
+    rememberThreadPreferences(thread);
     var messages = thread.messages || [];
     var count = Math.min(messages.length, MAX_MESSAGES);
     var start = Math.max(0, messages.length - count);
@@ -635,9 +798,8 @@ function loadMessages(seq, threadId, options) {
         Seq: seq,
         Index: i,
         Total: count,
-        MessageId: msg.id,
-        Role: msg.role,
-        Text: truncate(msg.text || "", MAX_TEXT),
+        Role: truncateUtf8(msg.role || "message", 15),
+        Text: truncateUtf8(msg.text || "", MAX_TEXT_BYTES),
         Status: msg.streaming ? "streaming" : ""
       });
     }
@@ -684,17 +846,28 @@ function firstLine(text) {
   return truncate(line || "Pebble thread", 48);
 }
 
-function modelSelectionForProject(snapshot, projectId) {
+function preferencesForProject(snapshot, projectId) {
+  var projects = snapshot && snapshot.projects ? snapshot.projects : [];
   var threads = snapshot && snapshot.threads ? snapshot.threads : [];
+  var projectModelSelection = null;
   var best = null;
+
+  for (var p = 0; p < projects.length; p++) {
+    if (projects[p].id === projectId) {
+      projectModelSelection = projects[p].defaultModelSelection || null;
+      break;
+    }
+  }
   for (var i = 0; i < threads.length; i++) {
-    if (threads[i].projectId === projectId && threads[i].modelSelection) {
+    if (threads[i].projectId === projectId) {
       if (!best || String(threads[i].updatedAt || "").localeCompare(String(best.updatedAt || "")) > 0) {
         best = threads[i];
       }
     }
   }
-  return best && best.modelSelection ? best.modelSelection : { provider: "codex", model: "gpt-5" };
+  var preferences = preferencesForThread(best);
+  preferences.modelSelection = projectModelSelection || preferences.modelSelection;
+  return preferences;
 }
 
 function createThread(seq, projectId, text, callback) {
@@ -708,15 +881,21 @@ function createThread(seq, projectId, text, callback) {
       callback(snapshotErr);
       return;
     }
+    var preferences = preferencesForProject(snapshot, projectId);
+    if (!preferences.modelSelection) {
+      callback(new Error("Set project model in T3 Code"));
+      return;
+    }
+    threadPreferencesById[serverThreadId] = preferences;
     rpc("orchestration.dispatchCommand", {
       type: "thread.create",
       commandId: uuid(),
       threadId: serverThreadId,
       projectId: projectId,
       title: firstLine(text),
-      modelSelection: modelSelectionForProject(snapshot, projectId),
-      runtimeMode: "full-access",
-      interactionMode: "default",
+      modelSelection: preferences.modelSelection,
+      runtimeMode: preferences.runtimeMode,
+      interactionMode: preferences.interactionMode,
       branch: null,
       worktreePath: null,
       createdAt: new Date().toISOString()
@@ -728,6 +907,7 @@ function createThread(seq, projectId, text, callback) {
 
 function dispatchTurn(threadId, text, callback) {
   var now = new Date().toISOString();
+  var preferences = savedThreadPreferences(threadId);
   rpc("orchestration.dispatchCommand", {
     type: "thread.turn.start",
     commandId: uuid(),
@@ -738,14 +918,14 @@ function dispatchTurn(threadId, text, callback) {
       text: text || "",
       attachments: []
     },
-    runtimeMode: "full-access",
-    interactionMode: "default",
+    runtimeMode: preferences.runtimeMode,
+    interactionMode: preferences.interactionMode,
     createdAt: now
   }, function() {}, callback);
 }
 
 function sendTurn(seq, threadId, projectId, text) {
-  sendStatus("Sending");
+  sendStatus(seq, "Sending");
   function finish(actualThreadId, err) {
     if (err) {
       sendError(seq, err.message);
@@ -789,7 +969,7 @@ Pebble.addEventListener("webviewclosed", function(e) {
   try {
     saved = JSON.parse(response);
   } catch (err) {
-    sendStatus("Settings cancelled");
+    sendGlobalStatus("Settings cancelled");
     return;
   }
   var settings = readSettings();
@@ -799,13 +979,14 @@ Pebble.addEventListener("webviewclosed", function(e) {
   settings.pairingCode = "";
   cachedSocketToken = null;
   writeSettings(settings);
-  sendStatus("Settings saved");
+  sendGlobalStatus("Settings saved");
 });
 
 Pebble.addEventListener("appmessage", function(e) {
   var payload = e.payload || {};
   var command = value(payload, "Command", 0);
   var seq = value(payload, "Seq", 0);
+  beginWatchRequest(seq);
   if (command === CMD_CONFIG) {
     var settings = readSettings();
     send({
@@ -820,6 +1001,7 @@ Pebble.addEventListener("appmessage", function(e) {
   } else if (command === CMD_MESSAGES) {
     cancelMessagePoll();
     cancelThreadListPoll();
+    cancelProjectListPoll();
     var token = messageViewToken;
     var threadId = value(payload, "ThreadId", "");
     clearThreadDone(threadId);
@@ -831,9 +1013,11 @@ Pebble.addEventListener("appmessage", function(e) {
   } else if (command === CMD_SEND) {
     cancelMessagePoll();
     cancelThreadListPoll();
+    cancelProjectListPoll();
     sendTurn(seq, value(payload, "ThreadId", ""), value(payload, "ProjectId", ""), value(payload, "Text", ""));
   } else if (command === CMD_CANCEL) {
     cancelMessagePoll();
     cancelThreadListPoll();
+    cancelProjectListPoll();
   }
 });

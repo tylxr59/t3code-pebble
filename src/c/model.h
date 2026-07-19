@@ -20,6 +20,7 @@ typedef struct {
   char id[ID_LEN];
   char title[TITLE_LEN];
   char status[32];
+  bool working;
 } ProjectItem;
 
 typedef struct {

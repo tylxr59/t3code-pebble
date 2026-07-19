@@ -1,6 +1,6 @@
 {
   "name": "t3code-pebble",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "author": "tylxr",
   "description": "Pebble Time 2 remote control for a T3 Code workspace.",
   "private": true,
