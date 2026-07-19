@@ -20,6 +20,10 @@ var MAX_THREADS = 40;
 var MAX_MESSAGES = 40;
 var MAX_TEXT = 520;
 
+var OAUTH_TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
+var OAUTH_ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
+var T3_BOOTSTRAP_TOKEN_TYPE = "urn:t3:params:oauth:token-type:environment-bootstrap";
+
 var cachedSocketToken = null;
 var nextRequestId = 1;
 var appMessageQueue = [];
@@ -107,8 +111,9 @@ function buildConfigUrl() {
     "function norm(v){v=String(v||'').trim();if(!v)return '';if(!/^https?:\\/\\//i.test(v))v='http://'+v;if(v.charAt(v.length-1)!=='/')v+='/';return v}" +
     "function log(v){statusEl.textContent+=(statusEl.textContent?'\\n':'')+v}" +
     "function setReady(){saveEl.disabled=!bearerToken}" +
-    "function postJson(url,body,cb){var r=new XMLHttpRequest();var done=false;var t=setTimeout(function(){if(done)return;done=true;try{r.abort()}catch(e){}cb(new Error('HTTP timeout'))},20000);function finish(e,d){if(done)return;done=true;clearTimeout(t);cb(e,d)}r.open('POST',url,true);r.setRequestHeader('content-type','application/json');r.onload=function(){var d=null;try{d=r.responseText?JSON.parse(r.responseText):null}catch(e){finish(new Error('Bad JSON'));return}if(r.status<200||r.status>=300){finish(new Error(d&&d.error?d.error:'HTTP '+r.status));return}finish(null,d)};r.onerror=function(){finish(new Error('Network error'))};r.send(JSON.stringify(body||{}))}" +
-    "document.getElementById('auth').onclick=function(){statusEl.textContent='';bearerToken='';setReady();var base=norm(document.getElementById('baseUrl').value);var code=String(document.getElementById('pairingCode').value||'').trim();if(!base){log('Enter server URL');return}if(!code){log('Enter pairing code');return}document.getElementById('baseUrl').value=base;log('Connecting to '+base);log('Exchanging pairing code');postJson(base.replace(/\\/+$/,'')+'/api/auth/bootstrap/bearer',{credential:code},function(err,data){if(err){log('Auth failed: '+err.message);return}if(!data||!data.sessionToken){log('Auth failed: no bearer token');return}bearerToken=data.sessionToken;bearerExpiresAt=data.expiresAt||'';log('Authenticated');if(bearerExpiresAt)log('Expires '+bearerExpiresAt);setReady()})};" +
+    "function post(url,type,body,cb){var r=new XMLHttpRequest();var done=false;var t=setTimeout(function(){if(done)return;done=true;try{r.abort()}catch(e){}cb(new Error('HTTP timeout'))},20000);function finish(e,d){if(done)return;done=true;clearTimeout(t);cb(e,d)}r.open('POST',url,true);r.setRequestHeader('content-type',type);r.onload=function(){var d=null;try{d=r.responseText?JSON.parse(r.responseText):null}catch(e){finish(new Error('Bad JSON'));return}if(r.status<200||r.status>=300){var er=new Error(d&&(d.error||d.reason||d.message)?d.error||d.reason||d.message:'HTTP '+r.status);er.status=r.status;finish(er);return}finish(null,d)};r.onerror=function(){finish(new Error('Network error'))};r.send(body)}" +
+    "function exchange(base,code,cb){var form='grant_type='+encodeURIComponent('urn:ietf:params:oauth:grant-type:token-exchange')+'&subject_token='+encodeURIComponent(code)+'&subject_token_type='+encodeURIComponent('urn:t3:params:oauth:token-type:environment-bootstrap')+'&requested_token_type='+encodeURIComponent('urn:ietf:params:oauth:token-type:access_token')+'&client_label='+encodeURIComponent('T3 Code for Pebble')+'&client_device_type=mobile';post(base+'/oauth/token','application/x-www-form-urlencoded',form,function(err,data){if(err&&err.status===404){post(base+'/api/auth/bootstrap/bearer','application/json',JSON.stringify({credential:code}),cb);return}cb(err,data)})}" +
+    "document.getElementById('auth').onclick=function(){statusEl.textContent='';bearerToken='';setReady();var base=norm(document.getElementById('baseUrl').value);var code=String(document.getElementById('pairingCode').value||'').trim();if(!base){log('Enter server URL');return}if(!code){log('Enter pairing code');return}document.getElementById('baseUrl').value=base;log('Connecting to '+base);log('Exchanging pairing code');exchange(base.replace(/\\/+$/,''),code,function(err,data){if(err){log('Auth failed: '+err.message);return}bearerToken=data&&(data.access_token||data.sessionToken);if(!bearerToken){log('Auth failed: no bearer token');return}bearerExpiresAt=data.expiresAt||'';if(!bearerExpiresAt&&data.expires_in){bearerExpiresAt=new Date(Date.now()+data.expires_in*1000).toISOString()}log('Authenticated');if(bearerExpiresAt)log('Expires '+bearerExpiresAt);setReady()})};" +
     "saveEl.onclick=function(){var base=norm(document.getElementById('baseUrl').value);if(!base){log('Enter server URL');return}if(!bearerToken){log('Authenticate before saving');return}var payload={baseUrl:base,bearerToken:bearerToken,bearerExpiresAt:bearerExpiresAt};document.location='pebblejs://close#'+encodeURIComponent(JSON.stringify(payload))};" +
     "if(bearerToken){log('Existing bearer token loaded');setReady()}else{log('Enter URL and pairing code, then authenticate')}" +
     "</script></body></html>";
@@ -176,7 +181,7 @@ function basename(path) {
   return "";
 }
 
-function requestJson(url, method, body, bearerToken, callback) {
+function request(url, method, body, bearerToken, contentType, callback) {
   var req = new XMLHttpRequest();
   var finished = false;
   var timer = setTimeout(function() {
@@ -194,7 +199,7 @@ function requestJson(url, method, body, bearerToken, callback) {
   }
 
   req.open(method || "GET", url, true);
-  req.setRequestHeader("content-type", "application/json");
+  if (contentType) req.setRequestHeader("content-type", contentType);
   if (bearerToken) req.setRequestHeader("authorization", "Bearer " + bearerToken);
   req.onload = function() {
     var data = null;
@@ -205,7 +210,8 @@ function requestJson(url, method, body, bearerToken, callback) {
       return;
     }
     if (req.status < 200 || req.status >= 300) {
-      var message = data && data.error ? data.error : "HTTP " + req.status;
+      var message = data && (data.error || data.reason || data.message) ?
+        data.error || data.reason || data.message : "HTTP " + req.status;
       var httpError = new Error(message);
       httpError.status = req.status;
       done(httpError);
@@ -214,7 +220,49 @@ function requestJson(url, method, body, bearerToken, callback) {
     done(null, data);
   };
   req.onerror = function() { done(new Error("NETWORK")); };
-  req.send(body === undefined ? null : JSON.stringify(body));
+  req.send(body === undefined ? null : body);
+}
+
+function requestJson(url, method, body, bearerToken, callback) {
+  request(url, method, body === undefined ? undefined : JSON.stringify(body), bearerToken,
+    "application/json", callback);
+}
+
+function requestForm(url, fields, callback) {
+  var parts = [];
+  for (var name in fields) {
+    if (Object.prototype.hasOwnProperty.call(fields, name)) {
+      parts.push(encodeURIComponent(name) + "=" + encodeURIComponent(fields[name]));
+    }
+  }
+  request(url, "POST", parts.join("&"), null, "application/x-www-form-urlencoded", callback);
+}
+
+function bearerExpiry(result) {
+  if (result && result.expiresAt) return result.expiresAt;
+  if (result && result.expires_in) {
+    return new Date(Date.now() + result.expires_in * 1000).toISOString();
+  }
+  return "";
+}
+
+function exchangePairingCode(pairingCode, callback) {
+  requestForm(endpoint("/oauth/token"), {
+    grant_type: OAUTH_TOKEN_EXCHANGE_GRANT,
+    subject_token: pairingCode,
+    subject_token_type: T3_BOOTSTRAP_TOKEN_TYPE,
+    requested_token_type: OAUTH_ACCESS_TOKEN_TYPE,
+    client_label: "T3 Code for Pebble",
+    client_device_type: "mobile"
+  }, function(err, result) {
+    if (err && err.status === 404) {
+      requestJson(endpoint("/api/auth/bootstrap/bearer"), "POST", {
+        credential: pairingCode
+      }, null, callback);
+      return;
+    }
+    callback(err, result);
+  });
 }
 
 function ensureBearerToken(callback) {
@@ -227,19 +275,18 @@ function ensureBearerToken(callback) {
     callback(new Error("Set pairing code"));
     return;
   }
-  requestJson(endpoint("/api/auth/bootstrap/bearer"), "POST", {
-    credential: settings.pairingCode
-  }, null, function(err, result) {
+  exchangePairingCode(settings.pairingCode, function(err, result) {
     if (err) {
       callback(err);
       return;
     }
-    var token = result && result.sessionToken;
+    var token = result && (result.access_token || result.sessionToken);
     if (!token) {
       callback(new Error("No session token"));
       return;
     }
     settings.bearerToken = token;
+    settings.bearerExpiresAt = bearerExpiry(result);
     settings.pairingCode = "";
     writeSettings(settings);
     callback(null, token);
@@ -252,28 +299,39 @@ function issueSocketUrl(callback) {
       callback(err);
       return;
     }
-    requestJson(endpoint("/api/auth/ws-token"), "POST", {}, bearerToken, function(wsErr, result) {
-      if (wsErr) {
-        if (wsErr.status === 401) {
-          var settings = readSettings();
-          settings.bearerToken = "";
-          writeSettings(settings);
-        }
-        callback(wsErr);
+    requestJson(endpoint("/api/auth/websocket-ticket"), "POST", {}, bearerToken, function(wsErr, result) {
+      if (wsErr && wsErr.status === 404) {
+        requestJson(endpoint("/api/auth/ws-token"), "POST", {}, bearerToken,
+          function(legacyErr, legacyResult) {
+            finishSocketUrl(legacyErr, legacyResult, true, callback);
+          });
         return;
       }
-      cachedSocketToken = result && result.token;
-      if (!cachedSocketToken) {
-        callback(new Error("No WS token"));
-        return;
-      }
-      callback(null, withSocketToken(cachedSocketToken));
+      finishSocketUrl(wsErr, result, false, callback);
     });
   });
 }
 
-function withSocketToken(token) {
-  return wsBaseUrl() + "?wsToken=" + encodeURIComponent(token);
+function finishSocketUrl(wsErr, result, legacy, callback) {
+  if (wsErr) {
+    if (wsErr.status === 401) {
+      var settings = readSettings();
+      settings.bearerToken = "";
+      writeSettings(settings);
+    }
+    callback(wsErr);
+    return;
+  }
+  cachedSocketToken = result && (legacy ? result.token : result.ticket);
+  if (!cachedSocketToken) {
+    callback(new Error(legacy ? "No WS token" : "No WS ticket"));
+    return;
+  }
+  callback(null, withSocketToken(cachedSocketToken, legacy));
+}
+
+function withSocketToken(token, legacy) {
+  return wsBaseUrl() + (legacy ? "?wsToken=" : "?wsTicket=") + encodeURIComponent(token);
 }
 
 function rpc(method, params, onChunk, onDone) {

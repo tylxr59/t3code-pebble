@@ -1,4 +1,4 @@
-name: CI
+name: Release PBW
 
 on:
   push:
@@ -8,11 +8,11 @@ permissions:
   contents: write
 
 jobs:
-  lint-and-build:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repo
+      - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Set up Node.js
@@ -26,7 +26,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang-format
 
-      - name: Install Pebble tool
+      - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -39,6 +39,11 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Verify release tag
+        run: |
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          test "$GITHUB_REF_NAME" = "v$PACKAGE_VERSION"
 
       - name: Lint
         run: npm run lint
@@ -53,8 +58,7 @@ jobs:
           path: build/*.pbw
           if-no-files-found: error
 
-      - name: Publish tagged release asset
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

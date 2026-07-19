@@ -10,11 +10,20 @@ For local live tests, read `.env` if present. It is intentionally git-ignored an
 
 Do not wire `.env` into the Pebble app bundle. The app gets credentials from the phone settings page, where the user enters the server URL and one-time pairing code, taps Authenticate, then saves the returned bearer token into PebbleKitJS localStorage.
 
-Useful T3 Code calls:
+Generate a fresh pairing code on a headless host with:
 
-- Pairing exchange: `POST /api/auth/bootstrap/bearer` with JSON `{ "credential": "PAIRING_CODE" }`
-- WebSocket token: `POST /api/auth/ws-token` with `Authorization: Bearer TOKEN`
-- WebSocket URL: `/ws?wsToken=SHORT_LIVED_TOKEN`
+```bash
+t3 auth pairing create --json
+```
+
+Use the returned `credential` value. Useful T3 Code calls:
+
+- Pairing exchange: `POST /oauth/token` using the OAuth token-exchange form fields.
+- WebSocket ticket: `POST /api/auth/websocket-ticket` with `Authorization: Bearer TOKEN`.
+- WebSocket URL: `/ws?wsTicket=SHORT_LIVED_TICKET`.
+
+Keep legacy fallbacks for `POST /api/auth/bootstrap/bearer`, `POST /api/auth/ws-token`, and
+`/ws?wsToken=...` so the watch app remains compatible with older T3 releases.
 
 The WebSocket transport uses T3 Code's tagged JSON RPC envelopes. Send requests like:
 

@@ -2,13 +2,16 @@
   "name": "t3code-pebble",
   "version": "0.1.3",
   "author": "tylxr",
+  "description": "Pebble Time 2 remote control for a T3 Code workspace.",
   "private": true,
   "scripts": {
     "check:js": "node --check src/pkjs/index.js",
     "lint:js": "eslint src/pkjs/**/*.js",
     "format:c:check": "clang-format --dry-run --Werror src/c/*.c src/c/*.h",
     "lint": "npm run check:js && npm run lint:js && npm run format:c:check",
-    "build": "pebble build"
+    "build": "pebble build",
+    "clean": "pebble clean",
+    "install:emery": "pebble install --emulator emery --vnc"
   },
   "pebble": {
     "displayName": "T3 Code",
