@@ -3,6 +3,12 @@ name: Release PBW
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing v* tag to rebuild and publish
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -10,10 +16,14 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -42,14 +52,18 @@ jobs:
 
       - name: Verify release tag
         run: |
+          case "$RELEASE_TAG" in v*) ;; *) exit 1 ;; esac
+          git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG"
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          test "$GITHUB_REF_NAME" = "v$PACKAGE_VERSION"
+          test "$RELEASE_TAG" = "v$PACKAGE_VERSION"
 
       - name: Lint
         run: npm run lint
 
       - name: Build PBW
-        run: npm run build
+        run: |
+          npm run build --if-present
+          if ! compgen -G "build/*.pbw" >/dev/null; then pebble build; fi
 
       - name: Upload PBW artifact
         uses: actions/upload-artifact@v4
@@ -62,6 +76,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
-            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Automated Pebble build."
-          gh release upload "$GITHUB_REF_NAME" build/*.pbw --clobber
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Automated Pebble build."
+          gh release upload "$RELEASE_TAG" build/*.pbw --clobber

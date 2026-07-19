@@ -94,7 +94,7 @@ npm run install:emery
 
 ## Releases
 
-Pushing a version tag such as `v0.1.3` runs the GitHub Actions release workflow:
+Pushing a version tag such as `v0.1.4` runs the GitHub Actions release workflow:
 
 ```bash
 npm ci
@@ -104,6 +104,8 @@ npm run build
 
 `npm run lint` validates PebbleKitJS syntax, runs ESLint, and checks C formatting with
 `clang-format`. The workflow verifies that the tag matches `package.json`, uploads the PBW as a workflow artifact, and attaches it to the matching GitHub Release.
+
+To repair a missing or outdated PBW for an existing tag, open **Actions → Release PBW → Run workflow** and enter that tag. Manual runs check out the exact tag before rebuilding and replacing the release asset. Release current code with a new version and tag instead of reusing an older tag.
 
 ## Project Layout
 
