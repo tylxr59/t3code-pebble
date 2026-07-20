@@ -11,7 +11,8 @@
     "lint": "npm run check:js && npm run lint:js && npm run format:c:check",
     "build": "pebble build",
     "clean": "pebble clean",
-    "install:emery": "pebble install --emulator emery --vnc"
+    "install:emery": "pebble install --emulator emery --vnc",
+    "release:notes": "node tools/extract-release-notes.js"
   },
   "pebble": {
     "displayName": "T3 Code",

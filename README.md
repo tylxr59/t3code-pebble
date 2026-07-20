@@ -96,6 +96,8 @@ Push a tag matching the version in `package.json`, such as `v0.1.5`, to run the 
 
 Release builds pin Pebble Tool 5.0.39 and Pebble SDK 4.17 for reproducibility.
 
+Release notes are taken from the matching version in `CHANGELOG.md`.
+
 To repair the PBW for an existing release, open **Actions → Release PBW → Run workflow** and enter the existing tag. The workflow checks out that exact tag before rebuilding. New code should always receive a new version and tag.
 
 ## Project Layout
@@ -104,7 +106,9 @@ To repair the PBW for an existing release, open **Actions → Release PBW → Ru
 src/c/                 Pebble C app, state model, and interface
 src/pkjs/              Authentication, settings, and WebSocket bridge
 screenshots/           Checked-in Pebble Time 2 screenshots
+CHANGELOG.md            Versioned user-facing release notes
 package.json           Pebble metadata, scripts, and message keys
+tools/                  Release-note tooling
 wscript                Pebble SDK build script
 pebble-appstore.md     Proposed Pebble Appstore listing copy
 ```

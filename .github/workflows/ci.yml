@@ -67,6 +67,11 @@ jobs:
           npm run build --if-present
           if ! compgen -G "build/*.pbw" >/dev/null; then pebble build; fi
 
+      - name: Prepare release notes
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          npm run --silent release:notes -- "$VERSION" > release-notes.md
+
       - name: Upload PBW artifact
         uses: actions/upload-artifact@v6
         with:
@@ -78,6 +83,38 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
-            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "Automated Pebble build."
-          gh release upload "$RELEASE_TAG" build/*.pbw --clobber
+          VERSION="${RELEASE_TAG#v}"
+          npm run --silent release:notes -- "$VERSION" > release-notes.md
+
+          retry() {
+            local attempt=1
+            local delay=5
+            while ! "$@"; do
+              if (( attempt >= 6 )); then
+                echo "Command failed after $attempt attempts: $*" >&2
+                return 1
+              fi
+              echo "GitHub API request failed; retrying in ${delay}s (attempt $((attempt + 1))/6)" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+              if (( delay > 30 )); then delay=30; fi
+            done
+          }
+
+          ensure_release() {
+            local output
+            if output="$(gh release view "$RELEASE_TAG" 2>&1)"; then
+              return 0
+            fi
+            if [[ "$output" == *"release not found"* ]]; then
+              gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file release-notes.md
+              return
+            fi
+            echo "$output" >&2
+            return 1
+          }
+
+          retry ensure_release
+          retry gh release edit "$RELEASE_TAG" --notes-file release-notes.md
+          retry gh release upload "$RELEASE_TAG" build/*.pbw --clobber
